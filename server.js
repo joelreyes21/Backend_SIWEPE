@@ -10,19 +10,14 @@ const { hashPassword, checkPassword, signToken, requireAuth, requireRole } = req
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-/* El front-end lo sirve este mismo servidor (mismo origen, sin necesidad de CORS).
-   Se permite además localhost/127.0.0.1 en cualquier puerto para desarrollo local
-   (abrir los .html con Live Server u otro puerto distinto de 3000). */
-const ORIGEN_DEV = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
-app.use(cors({
-  origin(origin, cb) { cb(null, !origin || ORIGEN_DEV.test(origin)); }
-}));
+/* API pública: el front-end (siwepe.shop) vive en otro hosting, así que se
+   permite CORS desde cualquier origen. La seguridad va por el token JWT. */
+app.use(cors());
 app.use(express.json({ limit: '30mb' }));           // imágenes en base64
 app.use(express.urlencoded({ extended: true, limit: '30mb' }));
 
-/* Sirve el front-end (admin.html, tienda.html, assets) desde la carpeta padre */
-app.use(express.static(path.join(__dirname, '..')));
-app.get('/', (req, res) => res.redirect('/tienda.html'));
+/* Este servidor es SOLO API (el front-end se hostea aparte). */
+app.get('/', (req, res) => res.json({ ok: true, service: 'SIWEPE API', ts: new Date().toISOString() }));
 
 /* ───────── helpers de conversión fila → objeto (forma que usa el front-end) ───────── */
 const num = (v) => (v == null ? 0 : Number(v));
@@ -335,4 +330,4 @@ initDb()
     console.log(`   Tienda: http://localhost:${PORT}/tienda.html`);
     console.log(`   Admin:  http://localhost:${PORT}/admin.html\n`);
   }))
-  .catch(err => { console.error('❌ No se pudo conectar a MySQL:', err.message); process.exit(1); });
+  .catch(err => { console.error('❌ No se pudo conectar a MySQL:', err.code || err.message || err); process.exit(1); });
