@@ -52,6 +52,10 @@ async function initDb(reintentos = 6) {
       });
       const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
       await pool.query(schema);
+      // Migración para bases creadas antes de que `pin` pasara a guardar un hash bcrypt
+      // (CREATE TABLE IF NOT EXISTS no amplía columnas en tablas que ya existían).
+      try { await pool.query("ALTER TABLE clientes MODIFY pin VARCHAR(60) NOT NULL DEFAULT '0000'"); }
+      catch (e) { console.warn('Aviso al ampliar columna clientes.pin (se continúa):', e.code || e.message); }
       console.log(`MySQL conectado: ${CFG.user}@${CFG.host}:${CFG.port}/${CFG.database}`);
       return pool;
     } catch (e) {

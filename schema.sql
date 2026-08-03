@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS clientes (
   correo     VARCHAR(120),
   direccion  VARCHAR(160),
   whatsapp   VARCHAR(24),
-  pin        VARCHAR(12) NOT NULL DEFAULT '0000',
+  pin        VARCHAR(60) NOT NULL DEFAULT '0000',
   registrado TINYINT NOT NULL DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

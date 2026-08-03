@@ -5,10 +5,15 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const { initDb, getPool } = require('./db');
-const { hashPassword, checkPassword, signToken, requireAuth, requireRole } = require('./auth');
+const { hashPassword, checkPassword, signToken, requireAuth, requireRole, isHashed } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+/* Detrás de un proxy (Railway u otro), confiar en X-Forwarded-For para que
+   req.ip sea la IP real del cliente y no la del proxy — si no, el limitador
+   de intentos de abajo agrupa a todos los usuarios bajo la misma IP. */
+app.set('trust proxy', 1);
 
 /* API pública: el front-end (siwepe.shop) vive en otro hosting, así que se
    permite CORS desde cualquier origen. La seguridad va por el token JWT. */
@@ -66,9 +71,9 @@ app.post('/api/auth/cliente-login', limitarIntentos(8, 10 * 60 * 1000), async (r
   try {
     const { nombre, pin } = req.body || {};
     if (!nombre || !pin) return res.status(400).json({ error: 'Faltan datos' });
-    const [rows] = await getPool().query('SELECT * FROM clientes WHERE LOWER(nombre)=? AND pin=? LIMIT 1', [String(nombre).toLowerCase().trim(), String(pin).trim()]);
+    const [rows] = await getPool().query('SELECT * FROM clientes WHERE LOWER(nombre)=? LIMIT 1', [String(nombre).toLowerCase().trim()]);
     const c = rows[0];
-    if (!c) return res.status(401).json({ error: 'Nombre o PIN incorrecto' });
+    if (!c || !checkPassword(String(pin).trim(), c.pin)) return res.status(401).json({ error: 'Nombre o PIN incorrecto' });
     const token = signToken({ id: c.id, nombre: c.nombre, role: 'cliente', ref_id: c.id });
     res.json({ token, cliente: c });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -76,28 +81,66 @@ app.post('/api/auth/cliente-login', limitarIntentos(8, 10 * 60 * 1000), async (r
 
 // Registro de cliente nuevo
 app.post('/api/auth/register', limitarIntentos(6, 10 * 60 * 1000), async (req, res) => {
+  const { nombre, pin, telefono, correo, direccion } = req.body || {};
+  if (!nombre || !pin || String(pin).length < 4) return res.status(400).json({ error: 'Nombre y PIN (mín. 4 dígitos) obligatorios' });
+  const pool = getPool();
+  const c = await pool.getConnection();
   try {
-    const { nombre, pin, telefono, correo, direccion } = req.body || {};
-    if (!nombre || !pin || String(pin).length < 4) return res.status(400).json({ error: 'Nombre y PIN (mín. 4 dígitos) obligatorios' });
-    const pool = getPool();
-    const [dup] = await pool.query('SELECT id FROM clientes WHERE LOWER(nombre)=? LIMIT 1', [String(nombre).toLowerCase().trim()]);
-    if (dup.length) return res.status(409).json({ error: 'Ya existe un cliente con ese nombre' });
+    await c.beginTransaction();
+    // Bloquea la fila de secuencias para serializar altas concurrentes y evitar
+    // que dos registros al mismo tiempo calculen el mismo id de cliente.
+    const [mrows] = await c.query('SELECT seq FROM app_meta WHERE id=1 FOR UPDATE');
+    const [dup] = await c.query('SELECT id FROM clientes WHERE LOWER(nombre)=? LIMIT 1', [String(nombre).toLowerCase().trim()]);
+    if (dup.length) {
+      await c.rollback();
+      return res.status(409).json({ error: 'Ya existe un cliente con ese nombre' });
+    }
     // siguiente id (respeta la secuencia del front-end)
-    const [mrows] = await pool.query('SELECT seq FROM app_meta WHERE id=1');
     const seq = mrows[0] ? mrows[0].seq : {};
-    const [maxr] = await pool.query('SELECT COALESCE(MAX(id),0) AS m FROM clientes');
+    const [maxr] = await c.query('SELECT COALESCE(MAX(id),0) AS m FROM clientes');
     const nid = Math.max(seq.cliente || 0, maxr[0].m) + 1;
-    await pool.query('INSERT INTO clientes (id,nombre,telefono,correo,direccion,whatsapp,pin,registrado) VALUES (?,?,?,?,?,?,?,1)',
-      [nid, nombre.trim(), telefono || '—', correo || '—', direccion || '—', '', String(pin).trim()]);
+    await c.query('INSERT INTO clientes (id,nombre,telefono,correo,direccion,whatsapp,pin,registrado) VALUES (?,?,?,?,?,?,?,1)',
+      [nid, nombre.trim(), telefono || '—', correo || '—', direccion || '—', '', hashPassword(String(pin).trim())]);
     seq.cliente = nid;
-    await pool.query('UPDATE app_meta SET seq=? WHERE id=1', [JSON.stringify(seq)]);
+    await c.query('UPDATE app_meta SET seq=? WHERE id=1', [JSON.stringify(seq)]);
+    await c.commit();
     const [rows] = await pool.query('SELECT * FROM clientes WHERE id=?', [nid]);
     const token = signToken({ id: nid, nombre: nombre.trim(), role: 'cliente', ref_id: nid });
     res.json({ token, cliente: rows[0] });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally {
+    c.release();
+  }
 });
 
 app.get('/api/me', requireAuth, (req, res) => res.json({ user: req.user }));
+
+// Crear (o actualizar) un usuario del sistema — solo un admin puede hacerlo
+app.post('/api/users', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const { nombre, email, password, role } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'Correo y contraseña obligatorios' });
+    // Solo admin/proveedor: 'cliente' entra por nombre+PIN contra la tabla `clientes`,
+    // no por email+contraseña contra `users` — permitirlo aquí crearía una cuenta
+    // huérfana que nunca podría iniciar sesión.
+    if (!['admin', 'proveedor'].includes(role)) {
+      return res.status(400).json({ error: "Rol inválido: usa 'admin' o 'proveedor'" });
+    }
+    const correo = String(email).toLowerCase().trim();
+    const pool = getPool();
+    const [ex] = await pool.query('SELECT id FROM users WHERE email=? LIMIT 1', [correo]);
+    if (ex.length) {
+      await pool.query('UPDATE users SET nombre=?, password_hash=?, role=?, activo=1 WHERE email=?',
+        [nombre || 'Usuario', hashPassword(password), role, correo]);
+      return res.json({ ok: true, actualizado: true, email: correo, role });
+    }
+    await pool.query('INSERT INTO users (nombre,email,password_hash,role,activo) VALUES (?,?,?,?,1)',
+      [nombre || 'Usuario', correo, hashPassword(password), role]);
+    res.json({ ok: true, creado: true, email: correo, role });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 /* ───────── CATÁLOGO PÚBLICO (para navegar sin iniciar sesión) ───────── */
 app.get('/api/catalog', async (req, res) => {
@@ -185,40 +228,48 @@ app.get('/api/state', requireAuth, async (req, res) => {
 /* ───────── GUARDAR ESTADO COMPLETO (sólo admin/proveedor) ───────── */
 async function guardarEstadoCompleto(c, db) {
   await c.query('SET FOREIGN_KEY_CHECKS = 0');
-  for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','clientes','proveedores','categorias'])
-    await c.query(`TRUNCATE TABLE ${t}`);
+  try {
+    // DELETE (no TRUNCATE): TRUNCATE hace commit implícito en MySQL/InnoDB, lo que
+    // rompería la atomicidad de la transacción — un error a mitad de esta función
+    // dejaría las tablas ya "truncadas" vacías para siempre, sin poder revertir.
+    for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','clientes','proveedores','categorias'])
+      await c.query(`DELETE FROM ${t}`);
 
-  if (db.config) {
-    const cf = db.config;
-    await c.query('UPDATE config SET nombre=?,logo=?,moneda=?,tema=?,pin_admin=?,banners=?,pago=? WHERE id=1',
-      [cf.nombre, cf.logo || '', cf.moneda, cf.tema, cf.pinAdmin || '1234', JSON.stringify(cf.banners || []), JSON.stringify(cf.pago || {})]);
+    if (db.config) {
+      const cf = db.config;
+      await c.query('UPDATE config SET nombre=?,logo=?,moneda=?,tema=?,pin_admin=?,banners=?,pago=? WHERE id=1',
+        [cf.nombre, cf.logo || '', cf.moneda, cf.tema, cf.pinAdmin || '1234', JSON.stringify(cf.banners || []), JSON.stringify(cf.pago || {})]);
+    }
+    if (db.seq) await c.query('UPDATE app_meta SET seq=? WHERE id=1', [JSON.stringify(db.seq)]);
+
+    for (const x of db.categorias || [])
+      await c.query('INSERT INTO categorias (id,nombre,descripcion,estado) VALUES (?,?,?,?)', [x.id, x.nombre, x.descripcion || '', x.estado || 'activo']);
+    for (const x of db.proveedores || [])
+      await c.query('INSERT INTO proveedores (id,nombre,telefono,correo,empresa,direccion,whatsapp,estado) VALUES (?,?,?,?,?,?,?,?)', [x.id, x.nombre, x.telefono || '', x.correo || '', x.empresa || '', x.direccion || '', x.whatsapp || '', x.estado || 'activo']);
+    for (const x of db.clientes || [])
+      await c.query('INSERT INTO clientes (id,nombre,telefono,correo,direccion,whatsapp,pin,registrado) VALUES (?,?,?,?,?,?,?,?)',
+        [x.id, x.nombre, x.telefono || '', x.correo || '', x.direccion || '', x.whatsapp || '', isHashed(x.pin) ? x.pin : hashPassword(String(x.pin || '0000')), x.registrado ? 1 : 0]);
+    for (const x of db.productos || [])
+      await c.query('INSERT INTO productos (id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_min,imagen,estado,destacado,marca,tipo_piel) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [x.id, x.codigo || '', x.nombre, x.categoria_id || null, x.descripcion || '', num(x.precio_compra), num(x.precio_venta), num(x.stock), num(x.stock_min), x.imagen || '', x.estado || 'activo', x.destacado ? 1 : 0, x.marca || '', JSON.stringify(x.tipoPiel || [])]);
+    for (const x of db.compras || [])
+      await c.query('INSERT INTO compras (id,producto_id,proveedor_id,cantidad,precio,fecha,obs) VALUES (?,?,?,?,?,?,?)', [x.id, x.producto_id || null, x.proveedor_id || null, num(x.cantidad), num(x.precio), x.fecha, x.obs || '']);
+    for (const x of db.ventas || [])
+      await c.query('INSERT INTO ventas (id,producto_id,cliente_id,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?)', [x.id, x.producto_id || null, x.cliente_id || null, num(x.cantidad), num(x.precio), x.fecha, num(x.total)]);
+    for (const x of db.movimientos || [])
+      await c.query('INSERT INTO movimientos (id,tipo,signo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?,?,?,?,?,?,?)', [x.id, x.tipo, x.signo || null, x.producto_id || null, num(x.cantidad), x.fecha, x.usuario || '', x.obs || '']);
+    for (const p of db.pedidos || []) {
+      await c.query('INSERT INTO pedidos (id,cliente_id,total,nota,fecha,estado,metodo_pago,comprobante) VALUES (?,?,?,?,?,?,?,?)', [p.id, p.cliente_id || null, num(p.total), p.nota || '', p.fecha, p.estado || 'pendiente', p.metodoPago || '', p.comprobante || '']);
+      for (const it of p.items || [])
+        await c.query('INSERT INTO pedido_items (pedido_id,producto_id,cantidad,precio,subtotal) VALUES (?,?,?,?,?)', [p.id, it.producto_id || null, num(it.cantidad), num(it.precio), num(it.subtotal)]);
+    }
+    for (const m of db.mensajes || [])
+      await c.query('INSERT INTO mensajes (id,pedido_id,autor,texto,fecha,leido) VALUES (?,?,?,?,?,?)', [m.id, m.pedido_id, m.autor, m.texto, dtMysql(m.fecha), m.leido ? 1 : 0]);
+  } finally {
+    // Siempre reactivar los checks de FK, incluso si algo falló arriba — si no,
+    // la conexión vuelve al pool con las validaciones apagadas para siempre.
+    await c.query('SET FOREIGN_KEY_CHECKS = 1');
   }
-  if (db.seq) await c.query('UPDATE app_meta SET seq=? WHERE id=1', [JSON.stringify(db.seq)]);
-
-  for (const x of db.categorias || [])
-    await c.query('INSERT INTO categorias (id,nombre,descripcion,estado) VALUES (?,?,?,?)', [x.id, x.nombre, x.descripcion || '', x.estado || 'activo']);
-  for (const x of db.proveedores || [])
-    await c.query('INSERT INTO proveedores (id,nombre,telefono,correo,empresa,direccion,whatsapp,estado) VALUES (?,?,?,?,?,?,?,?)', [x.id, x.nombre, x.telefono || '', x.correo || '', x.empresa || '', x.direccion || '', x.whatsapp || '', x.estado || 'activo']);
-  for (const x of db.clientes || [])
-    await c.query('INSERT INTO clientes (id,nombre,telefono,correo,direccion,whatsapp,pin,registrado) VALUES (?,?,?,?,?,?,?,?)', [x.id, x.nombre, x.telefono || '', x.correo || '', x.direccion || '', x.whatsapp || '', x.pin || '0000', x.registrado ? 1 : 0]);
-  for (const x of db.productos || [])
-    await c.query('INSERT INTO productos (id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_min,imagen,estado,destacado,marca,tipo_piel) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      [x.id, x.codigo || '', x.nombre, x.categoria_id || null, x.descripcion || '', num(x.precio_compra), num(x.precio_venta), num(x.stock), num(x.stock_min), x.imagen || '', x.estado || 'activo', x.destacado ? 1 : 0, x.marca || '', JSON.stringify(x.tipoPiel || [])]);
-  for (const x of db.compras || [])
-    await c.query('INSERT INTO compras (id,producto_id,proveedor_id,cantidad,precio,fecha,obs) VALUES (?,?,?,?,?,?,?)', [x.id, x.producto_id || null, x.proveedor_id || null, num(x.cantidad), num(x.precio), x.fecha, x.obs || '']);
-  for (const x of db.ventas || [])
-    await c.query('INSERT INTO ventas (id,producto_id,cliente_id,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?)', [x.id, x.producto_id || null, x.cliente_id || null, num(x.cantidad), num(x.precio), x.fecha, num(x.total)]);
-  for (const x of db.movimientos || [])
-    await c.query('INSERT INTO movimientos (id,tipo,signo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?,?,?,?,?,?,?)', [x.id, x.tipo, x.signo || null, x.producto_id || null, num(x.cantidad), x.fecha, x.usuario || '', x.obs || '']);
-  for (const p of db.pedidos || []) {
-    await c.query('INSERT INTO pedidos (id,cliente_id,total,nota,fecha,estado,metodo_pago,comprobante) VALUES (?,?,?,?,?,?,?,?)', [p.id, p.cliente_id || null, num(p.total), p.nota || '', p.fecha, p.estado || 'pendiente', p.metodoPago || '', p.comprobante || '']);
-    for (const it of p.items || [])
-      await c.query('INSERT INTO pedido_items (pedido_id,producto_id,cantidad,precio,subtotal) VALUES (?,?,?,?,?)', [p.id, it.producto_id || null, num(it.cantidad), num(it.precio), num(it.subtotal)]);
-  }
-  for (const m of db.mensajes || [])
-    await c.query('INSERT INTO mensajes (id,pedido_id,autor,texto,fecha,leido) VALUES (?,?,?,?,?,?)', [m.id, m.pedido_id, m.autor, m.texto, dtMysql(m.fecha), m.leido ? 1 : 0]);
-
-  await c.query('SET FOREIGN_KEY_CHECKS = 1');
 }
 
 /* ───────── GUARDAR ESTADO (cliente) ─────────
@@ -339,6 +390,14 @@ async function asegurarBase() {
       ['Administrador', 'admin@siwepe.com', hashPassword('admin1234'), 'admin']);
     console.log('Admin por defecto creado: admin@siwepe.com / admin1234');
   }
+
+  // Migra a bcrypt los PIN de clientes que hayan quedado en texto plano
+  // (bases creadas antes de este cambio). Idempotente: no toca lo ya migrado.
+  const [pendientes] = await pool.query("SELECT id, pin FROM clientes WHERE pin NOT LIKE '$2%'");
+  for (const cl of pendientes) {
+    await pool.query('UPDATE clientes SET pin=? WHERE id=?', [hashPassword(String(cl.pin || '0000')), cl.id]);
+  }
+  if (pendientes.length) console.log(`PIN de ${pendientes.length} cliente(s) migrado(s) a bcrypt.`);
 }
 
 /* ───────── ARRANQUE ───────── */

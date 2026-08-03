@@ -4,7 +4,9 @@
    Ejemplos:
      node crear-usuario.js joel@siwepe.com miClave123 admin "Joel Reyes"
      node crear-usuario.js prov@correo.com clave123 proveedor "Proveedor X"
-   Roles válidos: admin | proveedor | cliente
+   Roles válidos: admin | proveedor
+   (los clientes se crean con POST /api/auth/register, no aquí — entran por
+   nombre + PIN contra la tabla `clientes`, no por email/contraseña)
 */
 require('dotenv').config();
 const { initDb, getPool } = require('./db');
@@ -19,8 +21,8 @@ async function run() {
     console.log('Uso: node crear-usuario.js <correo> <contraseña> <rol> "<nombre>"');
     process.exit(1);
   }
-  if (!['admin', 'proveedor', 'cliente'].includes(role)) {
-    console.log('Rol inválido. Usa: admin | proveedor | cliente');
+  if (!['admin', 'proveedor'].includes(role)) {
+    console.log('Rol inválido. Usa: admin | proveedor (los clientes se crean con POST /api/auth/register)');
     process.exit(1);
   }
 

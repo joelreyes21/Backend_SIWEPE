@@ -4,9 +4,15 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const SECRET = process.env.JWT_SECRET || 'dev_secret_cambia_esto';
+if (!process.env.JWT_SECRET) {
+  console.warn('AVISO: JWT_SECRET no está definido — usando un valor de desarrollo INSEGURO. Defínelo en tu .env / variables de entorno antes de ir a producción.');
+}
 
 const hashPassword = (plain) => bcrypt.hashSync(plain, 10);
 const checkPassword = (plain, hash) => bcrypt.compareSync(plain, hash || '');
+// Detecta si un valor ya es un hash bcrypt (para no volver a hashear PINs que el
+// front-end reenvía tal cual al guardar el estado completo).
+const isHashed = (s) => typeof s === 'string' && /^\$2[aby]\$\d{2}\$/.test(s);
 
 const signToken = (payload) => jwt.sign(payload, SECRET, { expiresIn: '3650d' }); // ~10 años: la sesión no se cierra
 
@@ -35,4 +41,4 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { hashPassword, checkPassword, signToken, verifyToken, requireAuth, requireRole };
+module.exports = { hashPassword, checkPassword, signToken, verifyToken, requireAuth, requireRole, isHashed };
