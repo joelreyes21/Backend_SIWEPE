@@ -43,12 +43,6 @@ y sesión con **JWT**.
 npm start
 ```
 
-Verás:
-```
-🌸 Belle Stock backend en http://localhost:3000
-   Tienda: http://localhost:3000/tienda.html
-   Admin:  http://localhost:3000/admin.html
-```
 
 Abre **http://localhost:3000/tienda.html** en el navegador. ¡Ya está todo conectado
 a MySQL!
