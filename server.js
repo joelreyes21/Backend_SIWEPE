@@ -61,8 +61,11 @@ const slugify = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g
 async function enviarVerificacion(correo, nombre, token) {
   const link = `${PUBLIC_API_URL}/api/empresas/verificar/${token}`;
   if (!resend) { console.warn('RESEND_API_KEY no configurada. Link de verificación:', link); return; }
-  await resend.emails.send({
-    from: process.env.MAIL_FROM || 'SIWEPE <onboarding@resend.dev>',
+  const remitente = process.env.MAIL_FROM || 'SIWEPE <onboarding@resend.dev>';
+  // El SDK de Resend NO lanza excepción cuando la API rechaza el envío: devuelve
+  // { data, error }. Hay que revisar `error` a mano, si no el fallo pasa en silencio.
+  const { data, error } = await resend.emails.send({
+    from: remitente,
     to: correo,
     subject: 'Verificá tu empresa en SIWEPE',
     html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#21303D">
@@ -73,6 +76,12 @@ async function enviarVerificacion(correo, nombre, token) {
       <p style="color:#888;font-size:13px">Si no fuiste vos, ignorá este correo.</p>
     </div>`
   });
+  if (error) {
+    console.error(`Error enviando correo (Resend) · from="${remitente}" to="${correo}" ->`, JSON.stringify(error));
+    throw new Error(error.message || 'Resend rechazó el envío');
+  }
+  console.log('Correo de verificación enviado a', correo, '· id:', data && data.id);
+  return data;
 }
 
 /* Resuelve una empresa ACTIVA a partir de su slug o su id numérico.
