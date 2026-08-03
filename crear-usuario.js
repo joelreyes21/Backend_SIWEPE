@@ -32,13 +32,13 @@ async function run() {
   const [existe] = await pool.query('SELECT id FROM users WHERE email=? LIMIT 1', [correo]);
   if (existe.length) {
     await pool.query('UPDATE users SET nombre=?, password_hash=?, role=?, activo=1 WHERE email=?', [nombre, hash, role, correo]);
-    console.log(`✅ Usuario actualizado: ${correo} (rol ${role})`);
+    console.log(`Usuario actualizado: ${correo} (rol ${role})`);
   } else {
     await pool.query('INSERT INTO users (nombre,email,password_hash,role,activo) VALUES (?,?,?,?,1)', [nombre, correo, hash, role]);
-    console.log(`✅ Usuario creado: ${correo} (rol ${role})`);
+    console.log(`Usuario creado: ${correo} (rol ${role})`);
   }
   console.log(`   Entra en la tienda → pestaña Admin con: ${correo} / ${password}`);
   process.exit(0);
 }
 
-run().catch(err => { console.error('❌ Error:', err.message); process.exit(1); });
+run().catch(err => { console.error('Error:', err.message); process.exit(1); });

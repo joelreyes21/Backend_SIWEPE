@@ -29,7 +29,7 @@ async function run() {
     const [cfg] = await c.query('SELECT id FROM config WHERE id=1');
     if (!cfg.length) {
       await c.query('INSERT INTO config (id,nombre,logo,moneda,tema,pin_admin,banners,pago) VALUES (1,?,?,?,?,?,?,?)',
-        ['Miscelaneasaly', '', 'L', 'rosado', '1234', JSON.stringify([]), JSON.stringify({ banco:'', cuenta:'', titular:'', tipo:'', nota:'' })]);
+        ['SIWEPE', '', 'L', 'cielo', '1234', JSON.stringify([]), JSON.stringify({ banco:'', cuenta:'', titular:'', tipo:'', nota:'' })]);
     }
 
     // Asegurar que exista un admin para poder entrar
@@ -40,7 +40,7 @@ async function run() {
       console.log('   (No había admin: creé admin@siwepe.com / admin1234)');
     }
 
-    console.log('✅ Base de datos vacía. Ahora todo lo que agregues viene de la base.');
+    console.log('Base de datos vacía. Ahora todo lo que agregues viene de la base.');
     console.log('   Entra al admin y empieza a crear tus categorías y productos.');
   } finally {
     c.release();
@@ -48,4 +48,4 @@ async function run() {
   }
 }
 
-run().catch(err => { console.error('❌ Error al limpiar la base:', err.message); process.exit(1); });
+run().catch(err => { console.error('Error al limpiar la base:', err.message); process.exit(1); });

@@ -52,7 +52,7 @@ async function initDb(reintentos = 6) {
       });
       const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
       await pool.query(schema);
-      console.log(`✅ MySQL conectado: ${CFG.user}@${CFG.host}:${CFG.port}/${CFG.database}`);
+      console.log(`MySQL conectado: ${CFG.user}@${CFG.host}:${CFG.port}/${CFG.database}`);
       return pool;
     } catch (e) {
       ultimoError = e;

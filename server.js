@@ -1,4 +1,4 @@
-/* server.js — API REST + sirve la web (Belle Stock)
+/* server.js — API REST + sirve la web (SIWEPE)
    Arranca con: npm start   →   http://localhost:3000/tienda.html */
 require('dotenv').config();
 const express = require('express');
@@ -329,7 +329,7 @@ async function asegurarBase() {
   const [c] = await pool.query('SELECT id FROM config WHERE id=1');
   if (!c.length) await pool.query(
     'INSERT INTO config (id,nombre,logo,moneda,tema,pin_admin,banners,pago) VALUES (1,?,?,?,?,?,?,?)',
-    ['Miscelaneasaly', '', 'L', 'rosado', '1234', JSON.stringify([]), JSON.stringify({ banco: '', cuenta: '', titular: '', tipo: '', nota: '' })]);
+    ['SIWEPE', '', 'L', 'cielo', '1234', JSON.stringify([]), JSON.stringify({ banco: '', cuenta: '', titular: '', tipo: '', nota: '' })]);
   const [m] = await pool.query('SELECT id FROM app_meta WHERE id=1');
   if (!m.length) await pool.query('INSERT INTO app_meta (id,seq) VALUES (1,?)',
     [JSON.stringify({ producto: 0, categoria: 0, proveedor: 0, cliente: 0, compra: 0, venta: 0, movimiento: 0, pedido: 0, mensaje: 0 })]);
@@ -337,7 +337,7 @@ async function asegurarBase() {
   if (u[0].n === 0) {
     await pool.query('INSERT INTO users (nombre,email,password_hash,role,activo) VALUES (?,?,?,?,1)',
       ['Administrador', 'admin@siwepe.com', hashPassword('admin1234'), 'admin']);
-    console.log('👤 Admin por defecto creado: admin@siwepe.com / admin1234');
+    console.log('Admin por defecto creado: admin@siwepe.com / admin1234');
   }
 }
 
@@ -345,6 +345,6 @@ async function asegurarBase() {
 initDb()
   .then(asegurarBase)
   .then(() => app.listen(PORT, () => {
-    console.log(`\n🌸 SIWEPE backend escuchando en el puerto ${PORT}\n`);
+    console.log(`\nSIWEPE backend escuchando en el puerto ${PORT}\n`);
   }))
-  .catch(err => { console.error('❌ No se pudo conectar a MySQL:', err.code || err.message || err); process.exit(1); });
+  .catch(err => { console.error('No se pudo conectar a MySQL:', err.code || err.message || err); process.exit(1); });

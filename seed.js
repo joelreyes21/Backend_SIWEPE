@@ -112,7 +112,7 @@ const pedidos = [
 ];
 
 const config = {
-  nombre:'Belle Stock', logo:'', moneda:'L', tema:'rosado', pin_admin:'1234',
+  nombre:'SIWEPE', logo:'', moneda:'L', tema:'cielo', pin_admin:'1234',
   banners:[], pago:{ banco:'', cuenta:'', titular:'', tipo:'', nota:'' },
 };
 
@@ -160,7 +160,7 @@ async function run() {
       ['Karla Pineda', 'proveedor@bellezahn.com', hashPassword('proveedor123'), 'proveedor', 1]);
 
     await c.query('SET FOREIGN_KEY_CHECKS = 1');
-    console.log('✅ Base de datos creada y poblada con datos de ejemplo.');
+    console.log('Base de datos creada y poblada con datos de ejemplo.');
     console.log('   Admin:     admin@siwepe.com / admin1234');
     console.log('   Proveedor: proveedor@bellezahn.com / proveedor123');
     console.log('   Clientes:  Sofía Martínez / 2222  (y otros con su PIN)');
@@ -170,4 +170,4 @@ async function run() {
   }
 }
 
-run().catch(err => { console.error('❌ Error al poblar la base:', err.message); process.exit(1); });
+run().catch(err => { console.error('Error al poblar la base:', err.message); process.exit(1); });
