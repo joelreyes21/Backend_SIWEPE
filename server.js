@@ -102,32 +102,31 @@ app.post('/api/empresas', limitarIntentos(5, 15 * 60 * 1000), async (req, res) =
   if (String(password).length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
   const email = String(correo).toLowerCase().trim();
   const pool = getPool();
-  const c = await pool.getConnection();
   try {
-    await c.beginTransaction();
-    const [dupU] = await c.query('SELECT id FROM users WHERE email=? LIMIT 1', [email]);
-    if (dupU.length) { await c.rollback(); return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' }); }
-    let base = slugify(nombre), slug = base, n = 1;
-    for (;;) { const [ex] = await c.query('SELECT id FROM empresas WHERE slug=? LIMIT 1', [slug]); if (!ex.length) break; slug = base + '-' + (++n); }
+    // NADA se crea todavía: la empresa y la cuenta se crean SÓLO cuando se
+    // confirma el correo (en /api/empresas/verificar/:token). Aquí sólo dejamos
+    // la solicitud "en espera".
+    const [dupU] = await pool.query('SELECT id FROM users WHERE email=? LIMIT 1', [email]);
+    if (dupU.length) return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
+
     const token = crypto.randomBytes(24).toString('hex');
-    const [ins] = await c.query(
-      'INSERT INTO empresas (slug,nombre,rubro,descripcion,telefono,ciudad,pais,logo,correo,estado,verify_token) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [slug, nombre.trim(), rubro || '', descripcion || '', telefono || '', ciudad || '', pais || '', logo || '', email, 'pendiente', token]);
-    const empresaId = ins.insertId;
-    await c.query('INSERT INTO users (nombre,email,password_hash,role,empresa_id,activo) VALUES (?,?,?,?,?,0)',
-      [dueno.trim(), email, hashPassword(password), 'admin', empresaId]);
-    // Config y contadores propios de la empresa (tienda vacía, con el nombre elegido)
-    await c.query('INSERT INTO config (empresa_id,nombre,logo,moneda,tema,pin_admin,banners,pago) VALUES (?,?,?,?,?,?,?,?)',
-      [empresaId, nombre.trim(), logo || '', 'L', 'cielo', '1234', JSON.stringify([]), JSON.stringify({ banco: '', cuenta: '', titular: '', tipo: '', nota: '' })]);
-    await c.query('INSERT INTO app_meta (empresa_id,seq) VALUES (?,?)',
-      [empresaId, JSON.stringify({ producto: 0, categoria: 0, proveedor: 0, cliente: 0, compra: 0, venta: 0, movimiento: 0, pedido: 0, mensaje: 0 })]);
-    await c.commit();
-    enviarVerificacion(email, dueno.trim(), token).catch(e => console.warn('Error enviando correo:', e.message));
-    res.json({ ok: true, correo: email, slug });
+    // 1) Enviar el correo PRIMERO. Si no se puede enviar, no guardamos nada.
+    try {
+      await enviarVerificacion(email, dueno.trim(), token);
+    } catch (e) {
+      console.warn('Registro abortado: no se pudo enviar el correo de verificación:', e.message);
+      return res.status(502).json({ error: 'No pudimos enviar el correo de verificación a esa dirección. Revisá que el correo esté bien escrito e intentá de nuevo.' });
+    }
+    // 2) Guardar la solicitud PENDIENTE (todavía NO es empresa ni usuario).
+    //    Reemplaza cualquier solicitud previa sin confirmar del mismo correo.
+    await pool.query('DELETE FROM registros_pendientes WHERE correo=?', [email]);
+    await pool.query(
+      'INSERT INTO registros_pendientes (token,nombre,rubro,descripcion,telefono,ciudad,pais,logo,correo,dueno,password_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      [token, nombre.trim(), rubro || '', descripcion || '', telefono || '', ciudad || '', pais || '', logo || '', email, dueno.trim(), hashPassword(password)]);
+    res.json({ ok: true, correo: email });
   } catch (e) {
-    await c.rollback().catch(() => {});
     res.status(500).json({ error: e.message });
-  } finally { c.release(); }
+  }
 });
 
 // Lista pública de empresas activas (para "Descubrir empresas")
@@ -138,17 +137,51 @@ app.get('/api/empresas', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Verificar el correo → activa la empresa y su usuario admin
+// Verificar el correo → RECIÉN AQUÍ se crea la empresa, la cuenta admin, su
+// config y contadores. Si nunca se confirma, nada de esto llega a existir.
+// El enlace vence a las 24 horas.
 app.get('/api/empresas/verificar/:token', async (req, res) => {
+  const pool = getPool();
+  const c = await pool.getConnection();
   try {
-    const pool = getPool();
-    const [rows] = await pool.query("SELECT id FROM empresas WHERE verify_token=? AND estado='pendiente' LIMIT 1", [req.params.token]);
+    const [rows] = await pool.query(
+      'SELECT * FROM registros_pendientes WHERE token=? AND created_at > (NOW() - INTERVAL 24 HOUR) LIMIT 1',
+      [req.params.token]);
     if (!rows.length) return res.redirect(`${SITE_URL}/index.html?verify=invalido`);
-    const empId = rows[0].id;
-    await pool.query("UPDATE empresas SET estado='activa', verify_token=NULL WHERE id=?", [empId]);
-    await pool.query("UPDATE users SET activo=1 WHERE empresa_id=? AND role='admin'", [empId]);
+    const r = rows[0];
+
+    await c.beginTransaction();
+    // Si mientras tanto alguien ya creó una cuenta con ese correo, abortar.
+    const [dupU] = await c.query('SELECT id FROM users WHERE email=? LIMIT 1', [r.correo]);
+    if (dupU.length) {
+      await c.rollback();
+      await pool.query('DELETE FROM registros_pendientes WHERE token=?', [req.params.token]);
+      return res.redirect(`${SITE_URL}/index.html?verify=invalido`);
+    }
+    // slug único
+    let base = slugify(r.nombre), slug = base, n = 1;
+    for (;;) { const [ex] = await c.query('SELECT id FROM empresas WHERE slug=? LIMIT 1', [slug]); if (!ex.length) break; slug = base + '-' + (++n); }
+    // Empresa ACTIVA
+    const [ins] = await c.query(
+      "INSERT INTO empresas (slug,nombre,rubro,descripcion,telefono,ciudad,pais,logo,correo,estado,verify_token) VALUES (?,?,?,?,?,?,?,?,?,'activa',NULL)",
+      [slug, r.nombre, r.rubro || '', r.descripcion || '', r.telefono || '', r.ciudad || '', r.pais || '', r.logo || '', r.correo]);
+    const empresaId = ins.insertId;
+    // Cuenta admin ACTIVA (reutiliza el hash ya calculado en el registro)
+    await c.query('INSERT INTO users (nombre,email,password_hash,role,empresa_id,activo) VALUES (?,?,?,?,?,1)',
+      [r.dueno, r.correo, r.password_hash, 'admin', empresaId]);
+    // Config y contadores propios de la empresa
+    await c.query('INSERT INTO config (empresa_id,nombre,logo,moneda,tema,pin_admin,banners,pago) VALUES (?,?,?,?,?,?,?,?)',
+      [empresaId, r.nombre, r.logo || '', 'L', 'cielo', '1234', JSON.stringify([]), JSON.stringify({ banco: '', cuenta: '', titular: '', tipo: '', nota: '' })]);
+    await c.query('INSERT INTO app_meta (empresa_id,seq) VALUES (?,?)',
+      [empresaId, JSON.stringify({ producto: 0, categoria: 0, proveedor: 0, cliente: 0, compra: 0, venta: 0, movimiento: 0, pedido: 0, mensaje: 0 })]);
+    // Ya es empresa real: quitar la solicitud pendiente
+    await c.query('DELETE FROM registros_pendientes WHERE token=?', [req.params.token]);
+    await c.commit();
     res.redirect(`${SITE_URL}/index.html?verify=ok`);
-  } catch (e) { res.status(500).send('Error: ' + e.message); }
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    res.status(500).send('Error: ' + e.message);
+  } finally { c.release(); }
 });
 
 /* ───────── AUTENTICACIÓN ───────── */
@@ -521,6 +554,10 @@ async function asegurarBase() {
     await pool.query('UPDATE clientes SET pin=? WHERE empresa_id=? AND id=?', [hashPassword(String(cl.pin || '0000')), cl.empresa_id, cl.id]);
   }
   if (pendientes.length) console.log(`PIN de ${pendientes.length} cliente(s) migrado(s) a bcrypt.`);
+
+  // Limpia solicitudes de registro sin confirmar con más de 24h (nunca fueron empresa).
+  try { await pool.query('DELETE FROM registros_pendientes WHERE created_at < (NOW() - INTERVAL 24 HOUR)'); }
+  catch (e) { /* la tabla se crea en el arranque; si aún no existe, se ignora */ }
 }
 
 /* ───────── ARRANQUE ───────── */

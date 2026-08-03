@@ -28,6 +28,26 @@ CREATE TABLE IF NOT EXISTS empresas (
   created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Solicitudes de registro SIN confirmar todavía. Aquí espera la empresa
+-- mientras el dueño no haya hecho clic en el enlace del correo. Al confirmar,
+-- se convierte en una fila real de `empresas` + `users` y se borra de aquí.
+-- Si nunca se confirma, nunca se crea la empresa ni la cuenta.
+CREATE TABLE IF NOT EXISTS registros_pendientes (
+  token         VARCHAR(80) PRIMARY KEY,
+  nombre        VARCHAR(120) NOT NULL,
+  rubro         VARCHAR(60),
+  descripcion   VARCHAR(255),
+  telefono      VARCHAR(40),
+  ciudad        VARCHAR(80),
+  pais          VARCHAR(60),
+  logo          LONGTEXT,
+  correo        VARCHAR(120) NOT NULL,
+  dueno         VARCHAR(120) NOT NULL,
+  password_hash VARCHAR(120) NOT NULL,
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_reg_correo (correo)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Configuración del negocio: UNA fila por empresa
 CREATE TABLE IF NOT EXISTS config (
   empresa_id INT          NOT NULL,
