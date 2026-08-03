@@ -30,11 +30,12 @@ y sesión con **JWT**.
    npm install
    ```
 
-5. Crea la base de datos y cárgala con los datos de ejemplo:
+5. (Opcional) Deja la base vacía y lista para empezar de cero:
    ```bash
-   npm run seed
+   npm run reset
    ```
-   Esto crea la base `SIWEPE`, todas las tablas y los datos de demostración.
+   El servidor también crea la base, las tablas y un admin por defecto la primera
+   vez que arranca si la base está vacía.
 
 ## Arrancar el servidor
 
@@ -72,7 +73,7 @@ al confirmar el pedido.
 - `server.js` — servidor Express: sirve la web y expone la API.
 - `db.js` — conexión a MySQL (pool) y creación del esquema.
 - `schema.sql` — tablas normalizadas (identificador primario `id` en cada una).
-- `seed.js` — carga los datos de ejemplo y los usuarios.
+- `reset.js` — deja la base vacía (solo config + admin) para empezar de cero.
 - `auth.js` — cifrado de contraseñas (bcrypt) y tokens (JWT) + control de roles.
 
 ### Endpoints principales
