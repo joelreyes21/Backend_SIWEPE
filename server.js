@@ -51,6 +51,81 @@ function mapProducto(r) {
     destacado: !!r.destacado, marca: r.marca || '', tipoPiel: arr(r.tipo_piel) };
 }
 
+/* ───────── CORREO (Resend) para verificación de empresas ───────── */
+const { Resend } = require('resend');
+const crypto = require('crypto');
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+const PUBLIC_API_URL = process.env.PUBLIC_API_URL || `http://localhost:${PORT}`;
+const SITE_URL = process.env.SITE_URL || 'https://siwepe.shop';
+const slugify = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'empresa';
+async function enviarVerificacion(correo, nombre, token) {
+  const link = `${PUBLIC_API_URL}/api/empresas/verificar/${token}`;
+  if (!resend) { console.warn('RESEND_API_KEY no configurada. Link de verificación:', link); return; }
+  await resend.emails.send({
+    from: process.env.MAIL_FROM || 'SIWEPE <onboarding@resend.dev>',
+    to: correo,
+    subject: 'Verificá tu empresa en SIWEPE',
+    html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#21303D">
+      <h2 style="color:#4F86C6">Bienvenido a SIWEPE</h2>
+      <p>Hola ${nombre}, gracias por registrar tu empresa.</p>
+      <p>Para activarla, confirmá tu correo:</p>
+      <p style="text-align:center;margin:24px 0"><a href="${link}" style="background:#4F86C6;color:#fff;padding:12px 26px;border-radius:8px;text-decoration:none;font-weight:bold">Verificar mi empresa</a></p>
+      <p style="color:#888;font-size:13px">Si no fuiste vos, ignorá este correo.</p>
+    </div>`
+  });
+}
+
+/* ───────── EMPRESAS (registro con verificación por correo) ───────── */
+app.post('/api/empresas', limitarIntentos(5, 15 * 60 * 1000), async (req, res) => {
+  const { nombre, rubro, descripcion, telefono, ciudad, pais, logo, dueno, correo, password } = req.body || {};
+  if (!nombre || !dueno || !correo || !password) return res.status(400).json({ error: 'Faltan datos obligatorios' });
+  if (String(password).length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+  const email = String(correo).toLowerCase().trim();
+  const pool = getPool();
+  const c = await pool.getConnection();
+  try {
+    await c.beginTransaction();
+    const [dupU] = await c.query('SELECT id FROM users WHERE email=? LIMIT 1', [email]);
+    if (dupU.length) { await c.rollback(); return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' }); }
+    let base = slugify(nombre), slug = base, n = 1;
+    for (;;) { const [ex] = await c.query('SELECT id FROM empresas WHERE slug=? LIMIT 1', [slug]); if (!ex.length) break; slug = base + '-' + (++n); }
+    const token = crypto.randomBytes(24).toString('hex');
+    const [ins] = await c.query(
+      'INSERT INTO empresas (slug,nombre,rubro,descripcion,telefono,ciudad,pais,logo,correo,estado,verify_token) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      [slug, nombre.trim(), rubro || '', descripcion || '', telefono || '', ciudad || '', pais || '', logo || '', email, 'pendiente', token]);
+    const empresaId = ins.insertId;
+    await c.query('INSERT INTO users (nombre,email,password_hash,role,ref_id,activo) VALUES (?,?,?,?,?,0)',
+      [dueno.trim(), email, hashPassword(password), 'admin', empresaId]);
+    await c.commit();
+    enviarVerificacion(email, dueno.trim(), token).catch(e => console.warn('Error enviando correo:', e.message));
+    res.json({ ok: true, correo: email, slug });
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally { c.release(); }
+});
+
+// Lista pública de empresas activas (para "Descubrir empresas")
+app.get('/api/empresas', async (req, res) => {
+  try {
+    const [rows] = await getPool().query("SELECT id,slug,nombre,rubro,ciudad,pais,logo FROM empresas WHERE estado='activa' ORDER BY nombre");
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Verificar el correo → activa la empresa y su usuario admin
+app.get('/api/empresas/verificar/:token', async (req, res) => {
+  try {
+    const pool = getPool();
+    const [rows] = await pool.query("SELECT id FROM empresas WHERE verify_token=? AND estado='pendiente' LIMIT 1", [req.params.token]);
+    if (!rows.length) return res.redirect(`${SITE_URL}/index.html?verify=invalido`);
+    const empId = rows[0].id;
+    await pool.query("UPDATE empresas SET estado='activa', verify_token=NULL WHERE id=?", [empId]);
+    await pool.query("UPDATE users SET activo=1 WHERE ref_id=? AND role='admin'", [empId]);
+    res.redirect(`${SITE_URL}/index.html?verify=ok`);
+  } catch (e) { res.status(500).send('Error: ' + e.message); }
+});
+
 /* ───────── AUTENTICACIÓN ───────── */
 
 // Admin / proveedor (email + contraseña)

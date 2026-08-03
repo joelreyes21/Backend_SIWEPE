@@ -148,3 +148,19 @@ CREATE TABLE IF NOT EXISTS mensajes (
   fecha     DATETIME NOT NULL,
   leido     TINYINT NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS empresas (
+  id           INT AUTO_INCREMENT PRIMARY KEY,
+  slug         VARCHAR(90) UNIQUE,
+  nombre       VARCHAR(120) NOT NULL,
+  rubro        VARCHAR(60),
+  descripcion  VARCHAR(255),
+  telefono     VARCHAR(40),
+  ciudad       VARCHAR(80),
+  pais         VARCHAR(60),
+  logo         LONGTEXT,
+  correo       VARCHAR(120),
+  estado       VARCHAR(16) NOT NULL DEFAULT 'pendiente',  -- pendiente | activa
+  verify_token VARCHAR(80),
+  created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
