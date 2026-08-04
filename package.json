@@ -17,5 +17,9 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.11.5",
     "resend": "^4.8.0"
-  }
+  },
+  "author": "Joel Reyes",
+  "license": "UNLICENSED",
+  "private": true,
+  "copyright": "© 2026 Joel Reyes. Todos los derechos reservados."
 }

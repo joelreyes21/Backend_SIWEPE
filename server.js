@@ -1,3 +1,4 @@
+/*! SIWEPE · © 2026 Joel Reyes. Todos los derechos reservados. · Prohibida su reproduccion o distribucion sin autorizacion. */
 /* server.js — API REST + sirve la web (SIWEPE)
    Arranca con: npm start   →   http://localhost:3000/tienda.html */
 require('dotenv').config();

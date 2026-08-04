@@ -1,3 +1,4 @@
+-- SIWEPE · © 2026 Joel Reyes. Todos los derechos reservados. · Prohibida su reproduccion o distribucion sin autorizacion.
 -- ============================================================
 --  SIWEPE — Esquema de base de datos (MySQL) · MULTI-EMPRESA
 --  Cada tabla del negocio lleva `empresa_id`: los datos de una

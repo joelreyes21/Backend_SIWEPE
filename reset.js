@@ -1,3 +1,4 @@
+/*! SIWEPE · © 2026 Joel Reyes. Todos los derechos reservados. · Prohibida su reproduccion o distribucion sin autorizacion. */
 /* reset.js — deja la base de datos VACÍA (sin datos de ejemplo).
    Ejecuta:  npm run reset
    Borra productos, categorías, clientes, proveedores, compras, ventas,

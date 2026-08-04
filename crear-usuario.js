@@ -1,3 +1,4 @@
+/*! SIWEPE · © 2026 Joel Reyes. Todos los derechos reservados. · Prohibida su reproduccion o distribucion sin autorizacion. */
 /* crear-usuario.js — crea (o actualiza) un usuario del sistema.
    Uso:
      node crear-usuario.js <correo> <contraseña> <rol> "<nombre>"

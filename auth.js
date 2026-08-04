@@ -1,3 +1,4 @@
+/*! SIWEPE · © 2026 Joel Reyes. Todos los derechos reservados. · Prohibida su reproduccion o distribucion sin autorizacion. */
 /* auth.js — cifrado de contraseñas (bcrypt) y tokens de sesión (JWT) */
 require('dotenv').config();
 const bcrypt = require('bcryptjs');

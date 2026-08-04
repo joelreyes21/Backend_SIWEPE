@@ -1,3 +1,4 @@
+/*! SIWEPE · © 2026 Joel Reyes. Todos los derechos reservados. · Prohibida su reproduccion o distribucion sin autorizacion. */
 /* db.js — conexión a MySQL (pool) + creación del esquema.
    Funciona en LOCAL (variables DB_*) y en RAILWAY (variables MYSQL*, o una URL
    de conexión: DATABASE_URL / MYSQL_URL / MYSQL_PUBLIC_URL). */
