@@ -255,6 +255,36 @@ app.post('/api/auth/register', limitarIntentos(6, 10 * 60 * 1000), async (req, r
 
 app.get('/api/me', requireAuth, (req, res) => res.json({ user: req.user }));
 
+/* ───────── PERFIL DE MI EMPRESA ─────────
+   nombre/rubro/descripcion/telefono/ciudad/pais/logo viven en `empresas`,
+   NO en `config` — así que GET /api/state (que sólo lee `config`) nunca los
+   devuelve, y hasta ahora no había forma de editarlos después del registro
+   (POST /api/empresas sólo los ESCRIBE una vez, al crear la solicitud
+   pendiente). Estas dos rutas son las únicas que los exponen. */
+app.get('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) => {
+  const empresaId = req.user.empresa_id;
+  if (!empresaId) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
+  try {
+    const [[fila]] = await getPool().query(
+      'SELECT id,slug,nombre,rubro,descripcion,telefono,ciudad,pais,logo,correo FROM empresas WHERE id=?', [empresaId]);
+    if (!fila) return res.status(404).json({ error: 'Empresa no encontrada' });
+    res.json(fila);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) => {
+  const empresaId = req.user.empresa_id;
+  if (!empresaId) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
+  const { nombre, rubro, descripcion, telefono, ciudad, pais, logo } = req.body || {};
+  if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre del negocio' });
+  try {
+    await getPool().query(
+      'UPDATE empresas SET nombre=?, rubro=?, descripcion=?, telefono=?, ciudad=?, pais=?, logo=? WHERE id=?',
+      [String(nombre).trim(), rubro || '', descripcion || '', telefono || '', ciudad || '', pais || '', logo || '', empresaId]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Crear (o actualizar) un usuario del sistema — solo un admin puede hacerlo
 app.post('/api/users', requireAuth, requireRole('admin'), async (req, res) => {
   try {
