@@ -200,7 +200,8 @@ app.post('/api/auth/login', limitarIntentos(10, 10 * 60 * 1000), async (req, res
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Cliente (nombre + PIN) — PIN de 4 dígitos: limitar intentos es crítico
+// Cliente (nombre + contraseña) — la columna se sigue llamando `pin` en la
+// base de datos por compatibilidad, pero ya no está limitada a dígitos.
 app.post('/api/auth/cliente-login', limitarIntentos(8, 10 * 60 * 1000), async (req, res) => {
   try {
     const { nombre, pin, empresa } = req.body || {};
@@ -209,7 +210,7 @@ app.post('/api/auth/cliente-login', limitarIntentos(8, 10 * 60 * 1000), async (r
     if (!empresaId) return res.status(400).json({ error: 'Tienda no válida' });
     const [rows] = await getPool().query('SELECT * FROM clientes WHERE empresa_id=? AND LOWER(nombre)=? LIMIT 1', [empresaId, String(nombre).toLowerCase().trim()]);
     const c = rows[0];
-    if (!c || !checkPassword(String(pin).trim(), c.pin)) return res.status(401).json({ error: 'Nombre o PIN incorrecto' });
+    if (!c || !checkPassword(String(pin).trim(), c.pin)) return res.status(401).json({ error: 'Nombre o contraseña incorrectos' });
     const token = signToken({ id: c.id, nombre: c.nombre, role: 'cliente', empresa_id: empresaId, ref_id: c.id });
     res.json({ token, cliente: c });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -218,7 +219,7 @@ app.post('/api/auth/cliente-login', limitarIntentos(8, 10 * 60 * 1000), async (r
 // Registro de cliente nuevo
 app.post('/api/auth/register', limitarIntentos(6, 10 * 60 * 1000), async (req, res) => {
   const { nombre, pin, telefono, correo, direccion, empresa } = req.body || {};
-  if (!nombre || !pin || String(pin).length < 4) return res.status(400).json({ error: 'Nombre y PIN (mín. 4 dígitos) obligatorios' });
+  if (!nombre || !pin || String(pin).length < 6) return res.status(400).json({ error: 'Nombre y contraseña (mín. 6 caracteres) obligatorios' });
   const empresaId = await empresaIdDe(empresa);
   if (!empresaId) return res.status(400).json({ error: 'Tienda no válida' });
   const pool = getPool();
