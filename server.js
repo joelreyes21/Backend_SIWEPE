@@ -285,6 +285,25 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/* ───────── PERFIL DE MI CUENTA (cliente) ─────────
+   nombre/telefono/correo/direccion/whatsapp viven en `clientes`. GET /api/state
+   ya devuelve la fila propia del cliente logueado, pero PUT /api/state la
+   ignora por completo (guardarEstadoCliente sólo toca pedidos/mensajes) —
+   esta ruta es la única forma de editarla después del registro. */
+app.put('/api/clientes/mi', requireAuth, requireRole('cliente'), async (req, res) => {
+  const empresaId = req.user.empresa_id;
+  const refId = req.user.ref_id;
+  if (!empresaId || !refId) return res.status(403).json({ error: 'Sesión de cliente inválida' });
+  const { nombre, telefono, correo, direccion, whatsapp } = req.body || {};
+  if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre' });
+  try {
+    await getPool().query(
+      'UPDATE clientes SET nombre=?, telefono=?, correo=?, direccion=?, whatsapp=? WHERE empresa_id=? AND id=?',
+      [String(nombre).trim(), telefono || '', correo || '', direccion || '', whatsapp || '', empresaId, refId]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Crear (o actualizar) un usuario del sistema — solo un admin puede hacerlo
 app.post('/api/users', requireAuth, requireRole('admin'), async (req, res) => {
   try {
