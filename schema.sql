@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS registros_pendientes (
   KEY idx_reg_correo (correo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Tokens de recuperación de contraseña (login admin/proveedor por correo).
+-- Vencen a las 2 horas; se borran al usarse (ver /api/auth/reset).
+CREATE TABLE IF NOT EXISTS password_resets (
+  token      VARCHAR(80) PRIMARY KEY,
+  user_id    INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_pwreset_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Configuración del negocio: UNA fila por empresa
 CREATE TABLE IF NOT EXISTS config (
   empresa_id INT          NOT NULL,

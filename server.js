@@ -85,6 +85,29 @@ async function enviarVerificacion(correo, nombre, token) {
   return data;
 }
 
+async function enviarRecuperacion(correo, nombre, token) {
+  const link = `${SITE_URL}/admin.html?reset=${token}`;
+  if (!resend) { console.warn('RESEND_API_KEY no configurada. Link de recuperación:', link); return; }
+  const remitente = process.env.MAIL_FROM || 'SIWEPE <onboarding@resend.dev>';
+  const { data, error } = await resend.emails.send({
+    from: remitente,
+    to: correo,
+    subject: 'Recuperar tu contraseña en SIWEPE',
+    html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#21303D">
+      <h2 style="color:#4F86C6">Recuperar contraseña</h2>
+      <p>Hola ${nombre}, pediste restablecer tu contraseña del panel de SIWEPE.</p>
+      <p style="text-align:center;margin:24px 0"><a href="${link}" style="background:#4F86C6;color:#fff;padding:12px 26px;border-radius:8px;text-decoration:none;font-weight:bold">Elegir nueva contraseña</a></p>
+      <p style="color:#888;font-size:13px">Este enlace vence en 2 horas. Si no fuiste vos, ignorá este correo — tu contraseña actual sigue funcionando.</p>
+    </div>`
+  });
+  if (error) {
+    console.error(`Error enviando correo de recuperación (Resend) · to="${correo}" ->`, JSON.stringify(error));
+    throw new Error(error.message || 'Resend rechazó el envío');
+  }
+  console.log('Correo de recuperación enviado a', correo, '· id:', data && data.id);
+  return data;
+}
+
 /* Resuelve una empresa ACTIVA a partir de su slug o su id numérico.
    Devuelve el id (número) o null si no existe / no está activa. */
 async function empresaIdDe(ref) {
@@ -197,6 +220,43 @@ app.post('/api/auth/login', limitarIntentos(10, 10 * 60 * 1000), async (req, res
     if (!u || !checkPassword(password, u.password_hash)) return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
     const token = signToken({ id: u.id, nombre: u.nombre, role: u.role, empresa_id: u.empresa_id, ref_id: u.ref_id });
     res.json({ token, user: { id: u.id, nombre: u.nombre, role: u.role, empresa_id: u.empresa_id, ref_id: u.ref_id } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Olvidé mi contraseña (admin/proveedor) — pide el correo, manda un enlace.
+// Responde {ok:true} exista o no la cuenta, para no revelar qué correos están registrados.
+app.post('/api/auth/olvide', limitarIntentos(5, 15 * 60 * 1000), async (req, res) => {
+  const { correo } = req.body || {};
+  if (!correo) return res.status(400).json({ error: 'Falta el correo' });
+  const email = String(correo).toLowerCase().trim();
+  try {
+    const pool = getPool();
+    const [rows] = await pool.query('SELECT id, nombre FROM users WHERE email=? AND activo=1 LIMIT 1', [email]);
+    if (rows.length) {
+      const u = rows[0];
+      const token = crypto.randomBytes(24).toString('hex');
+      await pool.query('DELETE FROM password_resets WHERE user_id=?', [u.id]);
+      await pool.query('INSERT INTO password_resets (token,user_id) VALUES (?,?)', [token, u.id]);
+      try { await enviarRecuperacion(email, u.nombre, token); }
+      catch (e) { console.warn('No se pudo enviar el correo de recuperación:', e.message); }
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Elegir nueva contraseña con el token del correo de recuperación
+app.post('/api/auth/reset', limitarIntentos(8, 15 * 60 * 1000), async (req, res) => {
+  const { token, password } = req.body || {};
+  if (!token || !password) return res.status(400).json({ error: 'Faltan datos' });
+  if (String(password).length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+  try {
+    const pool = getPool();
+    const [rows] = await pool.query(
+      'SELECT * FROM password_resets WHERE token=? AND created_at > (NOW() - INTERVAL 2 HOUR) LIMIT 1', [token]);
+    if (!rows.length) return res.status(400).json({ error: 'El enlace no es válido o ya venció. Pedí uno nuevo.' });
+    await pool.query('UPDATE users SET password_hash=? WHERE id=?', [hashPassword(password), rows[0].user_id]);
+    await pool.query('DELETE FROM password_resets WHERE user_id=?', [rows[0].user_id]);
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -608,6 +668,10 @@ async function asegurarBase() {
 
   // Limpia solicitudes de registro sin confirmar con más de 24h (nunca fueron empresa).
   try { await pool.query('DELETE FROM registros_pendientes WHERE created_at < (NOW() - INTERVAL 24 HOUR)'); }
+  catch (e) { /* la tabla se crea en el arranque; si aún no existe, se ignora */ }
+
+  // Limpia tokens de recuperación de contraseña vencidos (más de 2h).
+  try { await pool.query('DELETE FROM password_resets WHERE created_at < (NOW() - INTERVAL 2 HOUR)'); }
   catch (e) { /* la tabla se crea en el arranque; si aún no existe, se ignora */ }
 }
 
