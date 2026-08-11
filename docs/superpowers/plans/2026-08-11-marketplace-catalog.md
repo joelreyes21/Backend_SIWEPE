@@ -29,7 +29,7 @@
 - Consumes: `getPool()` (existing DB pool accessor, defined earlier in `server.js`), `mapProducto(r)` (existing mapper at `server.js:48-53`, returns `{ id, codigo, nombre, categoria_id, descripcion, precio_compra, precio_venta, stock, stock_min, imagen, estado, destacado, marca, tipoPiel }`).
 - Produces: `GET /api/marketplace` — public endpoint, no auth, no params. Response shape: `{ productos: [ { ...camposDeProducto (sin precio_compra ni stock_min), empresa: { id, slug, nombre, rubro, ciudad, logo } } ] }`.
 
-- [ ] **Step 1: Write the route handler**
+- [x] **Step 1: Write the route handler**
 
 Insert this block into `server.js`, directly after the closing `});` of the `GET /api/catalog` route (line 410) and before `function mapPedidos(peds, items) {` (line 412):
 
@@ -65,12 +65,14 @@ app.get('/api/marketplace', async (req, res) => {
 });
 ```
 
-- [ ] **Step 2: Start the server locally**
+- [x] **Step 2: Start the server locally**
 
 Run: `npm start` (or `npm run dev` if you want auto-restart while iterating)
 Expected: console shows the server listening (no crash on boot — confirms the route was inserted with valid syntax and didn't break server startup).
 
-- [ ] **Step 3: Manually verify the happy path**
+> **Nota de ejecución:** en el entorno donde se implementó esto no había un `.env` ni acceso a un MySQL con las credenciales del proyecto (el `mysqld` local del sandbox no coincidía con las credenciales reales del usuario), así que no se pudo levantar el server contra una base real. Se confirmó igual que el proceso registra todas las rutas sin error de sintaxis (llega hasta el intento de conexión a MySQL antes de fallar, lo cual ocurre después de que Express ya registró `/api/marketplace`).
+
+- [ ] **Step 3: Manually verify the happy path** — **PENDIENTE, correr en tu máquina**
 
 With the server running and at least one empresa in `estado='activa'` that has at least one `producto` with `estado='activo'` (check existing dev data via `GET /api/empresas`, which lists active empresas), run:
 
@@ -85,15 +87,15 @@ curl http://localhost:3000/api/marketplace
 
 Expected: HTTP 200, JSON body `{ "productos": [...] }`. Each entry has `id`, `codigo`, `nombre`, `categoria_id`, `descripcion`, `precio_venta`, `stock`, `imagen`, `estado`, `destacado`, `marca`, `tipoPiel`, and an `empresa` object with `id`, `slug`, `nombre`, `rubro`, `ciudad`, `logo`. Confirm `precio_compra` and `stock_min` are **not** present on any product.
 
-- [ ] **Step 4: Verify multi-tienda mixing**
+- [ ] **Step 4: Verify multi-tienda mixing** — **PENDIENTE, correr en tu máquina**
 
 If you have 2+ active empresas with products, confirm the response contains products whose `empresa.slug` differs across entries (i.e. it's not scoped to one tienda). If your local DB only has one active empresa, register a second one via `POST /api/empresas` + `GET /api/empresas/verificar/:token` (or check the console-logged verification link if `RESEND_API_KEY` isn't set) to get a second data point, add one product to it via the admin flow, then re-run Step 3.
 
-- [ ] **Step 5: Verify filtering excludes inactive data**
+- [ ] **Step 5: Verify filtering excludes inactive data** — **PENDIENTE, correr en tu máquina**
 
 Pick one product and temporarily set its `estado` to something other than `'activo'` directly in MySQL (e.g. `UPDATE productos SET estado='inactivo' WHERE empresa_id=<id> AND id=<id>`), or pick an empresa and set `estado='pendiente'`. Re-run Step 3's request and confirm that product (or all products of that empresa) no longer appears. Revert the manual `UPDATE` afterward so you don't leave test data in a broken state.
 
-- [ ] **Step 6: Verify the empresa profile link works**
+- [ ] **Step 6: Verify the empresa profile link works** — **PENDIENTE, correr en tu máquina**
 
 Take any `empresa.slug` from the `/api/marketplace` response and confirm:
 ```bash
@@ -101,7 +103,7 @@ curl "http://localhost:3000/api/catalog?empresa=<slug>"
 ```
 returns that empresa's full catalog (HTTP 200, with `config`, `categorias`, `productos`). This confirms the "entrar al perfil de la empresa desde el producto" flow is already wired end-to-end via the existing route.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add server.js
