@@ -409,6 +409,36 @@ app.get('/api/catalog', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/* ───────── MARKETPLACE (catálogo cruzado entre todas las tiendas activas) ─────────
+   A diferencia de /api/catalog (una sola tienda), esta ruta junta productos
+   de TODAS las empresas activas para la vista de "descubrir productos" en
+   la app móvil / siwepe.shop. Cada producto trae su propia empresa embebida
+   para poder armar el link al perfil de esa tienda (GET /api/catalog?empresa=<slug>). */
+app.get('/api/marketplace', async (req, res) => {
+  try {
+    const [rows] = await getPool().query(
+      `SELECT productos.*, empresas.id AS emp_id, empresas.slug AS emp_slug,
+              empresas.nombre AS emp_nombre, empresas.rubro AS emp_rubro,
+              empresas.ciudad AS emp_ciudad, empresas.logo AS emp_logo
+       FROM productos
+       JOIN empresas ON productos.empresa_id = empresas.id
+       WHERE empresas.estado = 'activa' AND productos.estado = 'activo'`
+    );
+    res.json({
+      productos: rows.map(r => {
+        const { precio_compra, stock_min, ...p } = mapProducto(r);
+        return {
+          ...p,
+          empresa: {
+            id: r.emp_id, slug: r.emp_slug, nombre: r.emp_nombre,
+            rubro: r.emp_rubro || '', ciudad: r.emp_ciudad || '', logo: r.emp_logo || '',
+          },
+        };
+      }),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 function mapPedidos(peds, items) {
   return peds.map(p => ({
     id: p.id, cliente_id: p.cliente_id, total: num(p.total), nota: p.nota || '', fecha: p.fecha,
