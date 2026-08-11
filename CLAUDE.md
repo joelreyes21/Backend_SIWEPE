@@ -54,6 +54,17 @@ Registering a new empresa is a two-step, email-verified flow (see `POST /api/emp
 
 If the link is never clicked, the pending row just expires — `asegurarBase()` sweeps `registros_pendientes` older than 24h on every boot. `GET /api/empresas` lists active empresas publicly (id, slug, nombre, rubro, ciudad, pais, logo) for a "discover businesses" UI. `GET /api/catalog?empresa=<slug-or-id>` is the public, unauthenticated storefront read (config subset + categorías + productos) for browsing a specific tienda without logging in.
 
+#### Password recovery (admin/proveedor)
+
+`POST /api/auth/olvide` (email in) → looks up the `users` row, and if found generates a random token into `password_resets` (`user_id`, expires after 2h) and emails a reset link (`{SITE_URL}/admin.html?reset=<token>`) via `enviarRecuperacion()`. Always responds `{ok:true}` regardless of whether the email matched, to avoid leaking which emails are registered. `POST /api/auth/reset` (token + new password in, min 8 chars) validates the token hasn't expired, updates `password_hash`, and deletes the token row. This is separate from client accounts — clients have no email-based recovery, only an admin/proveedor can reset their own login this way.
+
+#### Editable profile endpoints
+
+Two small profile-edit routes exist outside the full-state model, added because `empresas.*` fields (nombre/rubro/descripcion/telefono/ciudad/pais/logo) and a client's own contact fields aren't otherwise writable after initial registration:
+
+- `GET`/`PUT /api/empresas/mi` (admin-only) — reads/writes the calling admin's own `empresas` row. Note `config` (via `/api/state`) does *not* carry these fields, so this is the only way to edit them post-signup.
+- `PUT /api/clientes/mi` (cliente-only) — updates the logged-in client's own `clientes` row (nombre/telefono/correo/direccion/whatsapp). `guardarEstadoCliente()` (`PUT /api/state`) silently ignores changes to the client's own record, so this endpoint is the only way a client can edit their profile.
+
 ### The "full state" sync model
 
 This is the most important thing to understand before changing `server.js`. The frontend was originally a local-storage app; the backend today still mirrors that shape via two endpoints instead of granular REST resources — both scoped to `req.user.empresa_id`:
@@ -70,8 +81,8 @@ The README calls this out as a known rough edge ("Pendiente de endurecer"): the 
 ### Other conventions
 
 - Row→API object shaping happens via small mapper functions near the top of `server.js` (`mapProducto`, `mapPedidos`) and helpers `num()` (safe numeric coercion) / `arr()` (safe array coercion) / `dtMysql()` (ISO → MySQL datetime) — reuse these rather than re-deriving shapes inline.
-- Login/registration endpoints (`/api/auth/login`, `/api/auth/cliente-login`, `/api/auth/register`, `/api/empresas`) are rate-limited by an in-memory `ip:route` map (`limitarIntentos`), not a shared store — this resets on restart and won't work correctly across multiple server instances. `app.set('trust proxy', 1)` is set so `req.ip` reflects the real client IP behind Railway's proxy instead of collapsing every user onto one key.
-- Client login is by name + bcrypt-hashed PIN (not email), scoped to an empresa (`nombre` only has to be unique within `empresa_id`) — `clientes.pin` is a bcrypt hash (`schema.sql`'s `pin` column is `VARCHAR(60)`), never compared or stored in plaintext. `asegurarBase()` migrates any legacy plaintext PINs to bcrypt on boot (`WHERE pin NOT LIKE '$2%'`). Because the PIN becomes a one-way hash, admin/proveedor views of a client's `pin` field (e.g. via `GET /api/state`) can no longer show the real PIN — only reset it to a new one.
+- Login/registration endpoints (`/api/auth/login`, `/api/auth/olvide`, `/api/auth/reset`, `/api/auth/cliente-login`, `/api/auth/register`, `/api/empresas`) are rate-limited by an in-memory `ip:route` map (`limitarIntentos`), not a shared store — this resets on restart and won't work correctly across multiple server instances. `app.set('trust proxy', 1)` is set so `req.ip` reflects the real client IP behind Railway's proxy instead of collapsing every user onto one key.
+- Client login is by name + bcrypt-hashed password, scoped to an empresa (`nombre` only has to be unique within `empresa_id`) — the column is still named `pin` in `schema.sql` (`VARCHAR(60)`, bcrypt hash, never compared or stored in plaintext) for backward compatibility, but it's no longer treated as a short numeric PIN: `POST /api/auth/register` now requires it to be at least 6 characters, with no digits-only restriction. `asegurarBase()` migrates any legacy plaintext PINs to bcrypt on boot (`WHERE pin NOT LIKE '$2%'`). Because it's a one-way hash, admin/proveedor views of a client's `pin` field (e.g. via `GET /api/state`) can no longer show the real value — only reset it to a new one.
 - `POST /api/users` (admin-only, via `requireRole('admin')`) only accepts `role: 'admin' | 'proveedor'` — `'cliente'` is intentionally rejected there since client accounts live in the `clientes` table (name+PIN), not `users` (email+password); allowing it would create an unusable orphaned account. New users created this way inherit `req.user.empresa_id` (the calling admin's own empresa).
 - The Resend integration (`enviarVerificacion()`) checks the SDK's `{ data, error }` return value explicitly — the Resend SDK does not throw on a rejected send, so a missed `error` check would fail silently.
 - All source comments and console output are in Spanish; match that convention when editing these files.
