@@ -312,20 +312,22 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
 });
 
 /* ───────── PERFIL DE MI CUENTA (cliente) ─────────
-   nombre/telefono/correo/direccion/whatsapp viven en `clientes`. GET /api/state
-   ya devuelve la fila propia del cliente logueado, pero PUT /api/state la
-   ignora por completo (guardarEstadoCliente sólo toca pedidos/mensajes) —
-   esta ruta es la única forma de editarla después del registro. */
+   nombre/telefono/correo/direccion/whatsapp viven ahora en `users` (el cliente
+   es una fila global, no una por empresa). Si cambia el correo, se revalida
+   que siga siendo único, porque también es su credencial de login. */
 app.put('/api/clientes/mi', requireAuth, requireRole('cliente'), async (req, res) => {
-  const empresaId = req.user.empresa_id;
-  const refId = req.user.ref_id;
-  if (!empresaId || !refId) return res.status(403).json({ error: 'Sesión de cliente inválida' });
   const { nombre, telefono, correo, direccion, whatsapp } = req.body || {};
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre' });
+  const email = correo ? String(correo).toLowerCase().trim() : null;
   try {
-    await getPool().query(
-      'UPDATE clientes SET nombre=?, telefono=?, correo=?, direccion=?, whatsapp=? WHERE empresa_id=? AND id=?',
-      [String(nombre).trim(), telefono || '', correo || '', direccion || '', whatsapp || '', empresaId, refId]);
+    const pool = getPool();
+    if (email) {
+      const [dup] = await pool.query('SELECT id FROM users WHERE email=? AND id<>? LIMIT 1', [email, req.user.id]);
+      if (dup.length) return res.status(409).json({ error: 'Ese correo ya está en uso' });
+    }
+    await pool.query(
+      'UPDATE users SET nombre=?, telefono=?, email=COALESCE(?,email), direccion=?, whatsapp=? WHERE id=?',
+      [String(nombre).trim(), telefono || '', email, direccion || '', whatsapp || '', req.user.id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
