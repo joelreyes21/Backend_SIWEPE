@@ -32,7 +32,7 @@ This is the foundational task: it removes the `clientes` table and, in the same 
 - Consumes: `getPool()`, `num()`, `arr()` (all already defined earlier in `server.js`).
 - Produces: after this task, `users` has `telefono`, `direccion`, `whatsapp` nullable columns; the `clientes` table no longer exists; `GET /api/state` for admin/proveedor returns a `clientes` array derived from `pedidos`+`users` (fields: `id, nombre, correo, telefono, direccion, whatsapp` — no `pin`, no `registrado`); `GET`/`PUT /api/state` return `403` for `role==='cliente'` with the message `'Los clientes ya no usan /api/state; usá /api/marketplace, /api/catalog, /api/pedidos/checkout, /api/mis-pedidos'`.
 
-- [ ] **Step 1: Update `schema.sql`**
+- [x] **Step 1: Update `schema.sql`**
 
 In the `users` table (`schema.sql:81-91`), add three nullable columns after `ref_id`:
 
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 Delete the entire `clientes` table block (`schema.sql:115-127`, from `CREATE TABLE IF NOT EXISTS clientes (` through its closing `) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`).
 
-- [ ] **Step 2: Add the migrator to `db.js`**
+- [x] **Step 2: Add the migrator to `db.js`**
 
 Insert this function right after `_migrarMultiEmpresa()` (after its closing `}` on `db.js:68`), before `async function initDb(...)`:
 
@@ -88,7 +88,7 @@ Then call it in `initDb()`, right after the existing `await _migrarMultiEmpresa(
       await _migrarClienteGlobal(pool);
 ```
 
-- [ ] **Step 3: Remove the unused `isHashed` import in `server.js`**
+- [x] **Step 3: Remove the unused `isHashed` import in `server.js`**
 
 `server.js:9` currently reads:
 ```js
@@ -100,7 +100,7 @@ const { hashPassword, checkPassword, signToken, requireAuth, requireRole } = req
 ```
 (`isHashed` was only used for hashing client PINs on full-state save, which Step 6 below removes.)
 
-- [ ] **Step 4: Rewrite `GET /api/state` (`server.js:454-510`)**
+- [x] **Step 4: Rewrite `GET /api/state` (`server.js:454-510`)**
 
 Replace the whole route with:
 
@@ -150,7 +150,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
 });
 ```
 
-- [ ] **Step 5: Trim `guardarEstadoCompleto()` (`server.js:515-562`)**
+- [x] **Step 5: Trim `guardarEstadoCompleto()` (`server.js:515-562`)**
 
 Change the `DELETE` loop (currently `server.js:521`):
 ```js
@@ -168,11 +168,11 @@ Delete this block entirely (currently `server.js:538-540`, right before `for (co
         [E, x.id, x.nombre, x.telefono || '', x.correo || '', x.direccion || '', x.whatsapp || '', isHashed(x.pin) ? x.pin : hashPassword(String(x.pin || '0000')), x.registrado ? 1 : 0]);
 ```
 
-- [ ] **Step 6: Delete `guardarEstadoCliente()` entirely (`server.js:564-648`)**
+- [x] **Step 6: Delete `guardarEstadoCliente()` entirely (`server.js:564-648`)**
 
 Delete the function and its preceding doc comment block, from `/* ───────── GUARDAR ESTADO (cliente) ─────────` through the function's closing `}` (currently `server.js:564` through `server.js:648`).
 
-- [ ] **Step 7: Rewrite `PUT /api/state` (`server.js:650-666`)**
+- [x] **Step 7: Rewrite `PUT /api/state` (`server.js:650-666`)**
 
 Replace with:
 
@@ -198,7 +198,7 @@ app.put('/api/state', requireAuth, async (req, res) => {
 });
 ```
 
-- [ ] **Step 8: Remove the plaintext-PIN migration block from `asegurarBase()` (`server.js:691-697`)**
+- [x] **Step 8: Remove the plaintext-PIN migration block from `asegurarBase()` (`server.js:691-697`)**
 
 Delete these lines entirely:
 ```js
@@ -211,12 +211,12 @@ Delete these lines entirely:
   if (pendientes.length) console.log(`PIN de ${pendientes.length} cliente(s) migrado(s) a bcrypt.`);
 ```
 
-- [ ] **Step 9: Syntax check**
+- [x] **Step 9: Syntax check** — `node --check server.js` y `node --check db.js` pasaron sin errores.
 
 Run: `node --check server.js` and `node --check db.js`
 Expected: no output, exit code 0 (parses cleanly — this does not execute the code or need a DB connection).
 
-- [ ] **Step 10: Manual live verification (run on a machine with working DB access to this project)**
+- [ ] **Step 10: Manual live verification (run on a machine with working DB access to this project)** — **PENDIENTE, correr en tu máquina** (este entorno no tuvo acceso a un MySQL con las credenciales del proyecto).
 
 1. Start the server (`npm start`) against a MySQL instance with the project's real credentials.
 2. Confirm no crash on boot, and the console shows the migration warning line (`Migrando cuentas de cliente a users...`) the first time it runs against a pre-existing DB, or nothing if the DB was already empty.
@@ -224,7 +224,7 @@ Expected: no output, exit code 0 (parses cleanly — this does not execute the c
 4. Log in as an existing admin/proveedor (`POST /api/auth/login`) and call `GET /api/state` → confirm it still returns `200` with a `clientes: []` (empty, since there are no `pedidos` yet pointing at a global client) instead of erroring.
 5. **Do not** test `POST /api/auth/cliente-login` or the old `POST /api/auth/register` shape here — they still reference the old model and are fixed in Task 2, which lands next.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit** — `796dca9`
 
 ```bash
 git add schema.sql db.js server.js
@@ -255,7 +255,7 @@ EOF
 - Consumes: `getPool()`, `hashPassword()`, `signToken()` (all already imported/defined).
 - Produces: `POST /api/auth/register` now takes `{ nombre, correo, password, telefono?, direccion?, whatsapp? }` and returns `{ token, user: { id, nombre, email, role: 'cliente' } }`. `POST /api/auth/login` (unchanged code) now also authenticates clients, since they're `users` rows.
 
-- [ ] **Step 1: Delete the `POST /api/auth/cliente-login` route**
+- [x] **Step 1: Delete the `POST /api/auth/cliente-login` route**
 
 Find and delete this entire route block:
 ```js
@@ -276,7 +276,7 @@ app.post('/api/auth/cliente-login', limitarIntentos(8, 10 * 60 * 1000), async (r
 });
 ```
 
-- [ ] **Step 2: Rewrite `POST /api/auth/register`**
+- [x] **Step 2: Rewrite `POST /api/auth/register`**
 
 Replace the whole route (currently the "Registro de cliente nuevo" block that queries `clientes`/`app_meta` per empresa) with:
 
@@ -301,19 +301,16 @@ app.post('/api/auth/register', limitarIntentos(6, 10 * 60 * 1000), async (req, r
 });
 ```
 
-- [ ] **Step 3: Syntax check**
+- [x] **Step 3: Syntax check** — pasó.
 
-Run: `node --check server.js`
-Expected: no output, exit code 0.
-
-- [ ] **Step 4: Manual live verification**
+- [ ] **Step 4: Manual live verification** — **PENDIENTE, correr en tu máquina**
 
 1. `curl -X POST http://localhost:3000/api/auth/register -H "Content-Type: application/json" -d '{"nombre":"Ana Test","correo":"ana@test.com","password":"clave1234"}'` → expect `200` with `{ token, user }`.
 2. Repeat the same request → expect `409` (`Ya existe una cuenta con ese correo`).
 3. `curl -X POST http://localhost:3000/api/auth/login -H "Content-Type: application/json" -d '{"email":"ana@test.com","password":"clave1234"}'` → expect `200` with a token (confirms the client authenticates through the same route as admin/proveedor now).
 4. `curl -X POST http://localhost:3000/api/auth/cliente-login -H "Content-Type: application/json" -d '{}'` → expect `404` (route no longer exists).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit** — `85966a8`
 
 ```bash
 git add server.js
@@ -341,7 +338,7 @@ EOF
 - Consumes: `getPool()`, `req.user.id` (present in every JWT since `auth.js`'s `signToken` payloads always include `id`).
 - Produces: `PUT /api/clientes/mi` body `{ nombre, telefono?, correo?, direccion?, whatsapp? }` → `200 { ok: true }` or `409` if `correo` collides with another account.
 
-- [ ] **Step 1: Rewrite the route**
+- [x] **Step 1: Rewrite the route**
 
 Replace the existing route (and its doc comment) with:
 
@@ -368,19 +365,16 @@ app.put('/api/clientes/mi', requireAuth, requireRole('cliente'), async (req, res
 });
 ```
 
-- [ ] **Step 2: Syntax check**
+- [x] **Step 2: Syntax check** — pasó.
 
-Run: `node --check server.js`
-Expected: no output, exit code 0.
-
-- [ ] **Step 3: Manual live verification**
+- [ ] **Step 3: Manual live verification** — **PENDIENTE, correr en tu máquina**
 
 1. Log in as the client created in Task 2 (`ana@test.com`).
 2. `curl -X PUT http://localhost:3000/api/clientes/mi -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"nombre":"Ana Actualizada","telefono":"9999-0000"}'` → expect `200 { ok: true }`.
 3. `GET /api/me` with the same token → confirm the response reflects... (note: `GET /api/me` just echoes the JWT payload, which won't show the new `nombre` until the client logs in again — that's expected, not a bug, since the JWT isn't re-issued on profile edit). Instead confirm the update by having an admin whose empresa this client ordered from check `GET /api/state`'s derived `clientes` list once Task 4 has produced an order — or query the DB directly: `SELECT nombre, telefono FROM users WHERE email='ana@test.com';`.
 4. Try updating with a `correo` that belongs to another existing user → expect `409`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit** — `7e3559b`
 
 ```bash
 git add server.js
@@ -403,7 +397,7 @@ EOF
 - Consumes: `getPool()`, `num()`, `arr()`, `req.user.id`.
 - Produces: `POST /api/pedidos/checkout` → `{ pedidos: [{ id, cliente_id, total, nota, fecha, estado, metodoPago, comprobante, items, empresa }] }`, one entry per empresa in the cart. Later tasks (`GET /api/mis-pedidos`) reuse this exact per-pedido shape.
 
-- [ ] **Step 1: Add the route**
+- [x] **Step 1: Add the route**
 
 ```js
 /* ───────── CHECKOUT (cliente) ─────────
@@ -490,12 +484,9 @@ app.post('/api/pedidos/checkout', requireAuth, requireRole('cliente'), async (re
 });
 ```
 
-- [ ] **Step 2: Syntax check**
+- [x] **Step 2: Syntax check** — pasó.
 
-Run: `node --check server.js`
-Expected: no output, exit code 0.
-
-- [ ] **Step 3: Manual live verification**
+- [ ] **Step 3: Manual live verification** — **PENDIENTE, correr en tu máquina**
 
 Setup: 2 empresas `activa` (A and B), each with at least one `producto` `activo`. Log in as the client from Task 2/3.
 
@@ -504,7 +495,7 @@ Setup: 2 empresas `activa` (A and B), each with at least one `producto` `activo`
 3. Checkout with a `producto_id` that doesn't exist in the given `empresa_id` → expect `400`, and confirm via `SELECT * FROM pedidos` that **no** new row was created for that request (all-or-nothing — including for the other, valid empresa group in the same cart if you mix a valid and an invalid group).
 4. Checkout with `empresa_id` pointing at an empresa with `estado='pendiente'` (or a made-up id) → expect `400`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit** — `a01eadf`
 
 ```bash
 git add server.js
@@ -534,7 +525,7 @@ EOF
 
 **Note:** do not reuse the existing `mapPedidos(peds, items)` helper here — it matches items to a pedido only by `pedido_id`, which is unique per empresa, not globally. Across empresas, two different pedidos can share the same numeric `id` (e.g. pedido `3` in empresa A and pedido `3` in empresa B), so `mapPedidos` would cross-contaminate their items. Build the mapping manually, keyed by `empresa_id:id`, as shown below.
 
-- [ ] **Step 1: Add the route**
+- [x] **Step 1: Add the route**
 
 ```js
 /* ───────── MIS PEDIDOS (cliente) ─────────
@@ -573,18 +564,15 @@ app.get('/api/mis-pedidos', requireAuth, requireRole('cliente'), async (req, res
 });
 ```
 
-- [ ] **Step 2: Syntax check**
+- [x] **Step 2: Syntax check** — pasó.
 
-Run: `node --check server.js`
-Expected: no output, exit code 0.
-
-- [ ] **Step 3: Manual live verification**
+- [ ] **Step 3: Manual live verification** — **PENDIENTE, correr en tu máquina**
 
 1. As the client from Task 4, call `GET /api/mis-pedidos` → expect the 2 pedidos created in Task 4's Step 3.2 (one per empresa), each with the correct `empresa` object and `items`.
 2. Log in as a *different* client (register a second one) with no orders → `GET /api/mis-pedidos` → expect `{ pedidos: [] }`.
 3. If both test empresas happen to have produced a pedido with the same numeric `id` (likely, since `app_meta.seq` starts independently per empresa), confirm each pedido in the response has its OWN `items` (not a mix of both) — this is the scenario the "don't reuse `mapPedidos`" note above exists to prevent.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit** — `e5b8031`
 
 ```bash
 git add server.js
@@ -607,7 +595,7 @@ EOF
 - Consumes: `getPool()`, `num()`, `dtMysql()`, `req.user.id`.
 - Produces: `GET /api/pedidos/:empresaId/:pedidoId/mensajes` → `{ mensajes: [{ id, pedido_id, autor, texto, fecha, leido }] }`. `POST ... /mensajes` body `{ texto }` → `{ ok: true, id }`.
 
-- [ ] **Step 1: Add the routes**
+- [x] **Step 1: Add the routes**
 
 ```js
 /* ───────── MENSAJES DE UN PEDIDO (cliente) ─────────
@@ -659,12 +647,9 @@ app.post('/api/pedidos/:empresaId/:pedidoId/mensajes', requireAuth, requireRole(
 });
 ```
 
-- [ ] **Step 2: Syntax check**
+- [x] **Step 2: Syntax check** — pasó.
 
-Run: `node --check server.js`
-Expected: no output, exit code 0.
-
-- [ ] **Step 3: Manual live verification**
+- [ ] **Step 3: Manual live verification** — **PENDIENTE, correr en tu máquina**
 
 Using one of the pedidos created in Task 4:
 
@@ -673,7 +658,7 @@ Using one of the pedidos created in Task 4:
 3. Log in as the *other* test client (no relation to this pedido) and repeat step 2 with the same `empresaId`/`pedidoId` → expect `404`.
 4. As the empresa's admin, call `GET /api/state` → confirm the message shows up in the admin's `mensajes` array (admin side is untouched, still reads from `mensajes` directly).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit** — `b4cb20b`
 
 ```bash
 git add server.js
