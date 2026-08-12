@@ -450,6 +450,54 @@ app.get('/api/mis-pedidos', requireAuth, requireRole('cliente'), async (req, res
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/* ───────── MENSAJES DE UN PEDIDO (cliente) ─────────
+   Reemplaza la porción de chat que antes vivía dentro de PUT /api/state
+   para el cliente (guardarEstadoCliente, eliminada al globalizar la cuenta).
+   Antes de leer/escribir, confirma que el pedido sea del cliente logueado —
+   si no, 404 genérico (no revela si el pedido es de otro cliente o no existe). */
+app.get('/api/pedidos/:empresaId/:pedidoId/mensajes', requireAuth, requireRole('cliente'), async (req, res) => {
+  const empresaId = num(req.params.empresaId);
+  const pedidoId = num(req.params.pedidoId);
+  try {
+    const pool = getPool();
+    const [[pedido]] = await pool.query('SELECT id FROM pedidos WHERE empresa_id=? AND id=? AND cliente_id=?', [empresaId, pedidoId, req.user.id]);
+    if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+    const [rows] = await pool.query(
+      'SELECT id,pedido_id,autor,texto,fecha,leido FROM mensajes WHERE empresa_id=? AND pedido_id=? ORDER BY fecha ASC, id ASC',
+      [empresaId, pedidoId]);
+    res.json({ mensajes: rows.map(m => ({ ...m, leido: !!m.leido })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/pedidos/:empresaId/:pedidoId/mensajes', requireAuth, requireRole('cliente'), async (req, res) => {
+  const empresaId = num(req.params.empresaId);
+  const pedidoId = num(req.params.pedidoId);
+  const texto = String((req.body && req.body.texto) || '').slice(0, 2000).trim();
+  if (!texto) return res.status(400).json({ error: 'Falta el texto del mensaje' });
+  const pool = getPool();
+  const c = await pool.getConnection();
+  try {
+    const [[pedido]] = await c.query('SELECT id FROM pedidos WHERE empresa_id=? AND id=? AND cliente_id=?', [empresaId, pedidoId, req.user.id]);
+    if (!pedido) { c.release(); return res.status(404).json({ error: 'Pedido no encontrado' }); }
+
+    await c.beginTransaction();
+    const [[meta]] = await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE', [empresaId]);
+    const seq = (meta && meta.seq) || {};
+    const [maxr] = await c.query('SELECT COALESCE(MAX(id),0) AS m FROM mensajes WHERE empresa_id=?', [empresaId]);
+    const nid = Math.max(num(seq.mensaje), maxr[0].m) + 1;
+
+    await c.query('INSERT INTO mensajes (empresa_id,id,pedido_id,autor,texto,fecha,leido) VALUES (?,?,?,?,?,?,0)',
+      [empresaId, nid, pedidoId, 'cliente', texto, dtMysql(new Date().toISOString())]);
+    seq.mensaje = nid;
+    await c.query('UPDATE app_meta SET seq=? WHERE empresa_id=?', [JSON.stringify(seq), empresaId]);
+    await c.commit();
+    res.json({ ok: true, id: nid });
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally { c.release(); }
+});
+
 // Crear (o actualizar) un usuario del sistema — solo un admin puede hacerlo
 app.post('/api/users', requireAuth, requireRole('admin'), async (req, res) => {
   try {
