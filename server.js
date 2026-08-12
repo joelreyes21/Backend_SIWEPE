@@ -260,58 +260,23 @@ app.post('/api/auth/reset', limitarIntentos(8, 15 * 60 * 1000), async (req, res)
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Cliente (nombre + contraseña) — la columna se sigue llamando `pin` en la
-// base de datos por compatibilidad, pero ya no está limitada a dígitos.
-app.post('/api/auth/cliente-login', limitarIntentos(8, 10 * 60 * 1000), async (req, res) => {
-  try {
-    const { nombre, pin, empresa } = req.body || {};
-    if (!nombre || !pin) return res.status(400).json({ error: 'Faltan datos' });
-    const empresaId = await empresaIdDe(empresa);
-    if (!empresaId) return res.status(400).json({ error: 'Tienda no válida' });
-    const [rows] = await getPool().query('SELECT * FROM clientes WHERE empresa_id=? AND LOWER(nombre)=? LIMIT 1', [empresaId, String(nombre).toLowerCase().trim()]);
-    const c = rows[0];
-    if (!c || !checkPassword(String(pin).trim(), c.pin)) return res.status(401).json({ error: 'Nombre o contraseña incorrectos' });
-    const token = signToken({ id: c.id, nombre: c.nombre, role: 'cliente', empresa_id: empresaId, ref_id: c.id });
-    res.json({ token, cliente: c });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Registro de cliente nuevo
+// Registro de cliente nuevo — cuenta global (correo+contraseña), no ligada a una empresa
 app.post('/api/auth/register', limitarIntentos(6, 10 * 60 * 1000), async (req, res) => {
-  const { nombre, pin, telefono, correo, direccion, empresa } = req.body || {};
-  if (!nombre || !pin || String(pin).length < 6) return res.status(400).json({ error: 'Nombre y contraseña (mín. 6 caracteres) obligatorios' });
-  const empresaId = await empresaIdDe(empresa);
-  if (!empresaId) return res.status(400).json({ error: 'Tienda no válida' });
-  const pool = getPool();
-  const c = await pool.getConnection();
-  try {
-    await c.beginTransaction();
-    // Bloquea la fila de secuencias de ESTA empresa para serializar altas concurrentes
-    // y evitar que dos registros al mismo tiempo calculen el mismo id de cliente.
-    const [mrows] = await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE', [empresaId]);
-    const [dup] = await c.query('SELECT id FROM clientes WHERE empresa_id=? AND LOWER(nombre)=? LIMIT 1', [empresaId, String(nombre).toLowerCase().trim()]);
-    if (dup.length) {
-      await c.rollback();
-      return res.status(409).json({ error: 'Ya existe un cliente con ese nombre en esta tienda' });
-    }
-    // siguiente id (respeta la secuencia del front-end, por empresa)
-    const seq = mrows[0] ? mrows[0].seq : {};
-    const [maxr] = await c.query('SELECT COALESCE(MAX(id),0) AS m FROM clientes WHERE empresa_id=?', [empresaId]);
-    const nid = Math.max(seq.cliente || 0, maxr[0].m) + 1;
-    await c.query('INSERT INTO clientes (empresa_id,id,nombre,telefono,correo,direccion,whatsapp,pin,registrado) VALUES (?,?,?,?,?,?,?,?,1)',
-      [empresaId, nid, nombre.trim(), telefono || '—', correo || '—', direccion || '—', '', hashPassword(String(pin).trim())]);
-    seq.cliente = nid;
-    await c.query('UPDATE app_meta SET seq=? WHERE empresa_id=?', [JSON.stringify(seq), empresaId]);
-    await c.commit();
-    const [rows] = await pool.query('SELECT * FROM clientes WHERE empresa_id=? AND id=?', [empresaId, nid]);
-    const token = signToken({ id: nid, nombre: nombre.trim(), role: 'cliente', empresa_id: empresaId, ref_id: nid });
-    res.json({ token, cliente: rows[0] });
-  } catch (e) {
-    await c.rollback().catch(() => {});
-    res.status(500).json({ error: e.message });
-  } finally {
-    c.release();
+  const { nombre, correo, password, telefono, direccion, whatsapp } = req.body || {};
+  if (!nombre || !String(nombre).trim() || !correo || !password || String(password).length < 8) {
+    return res.status(400).json({ error: 'Nombre, correo y contraseña (mín. 8 caracteres) obligatorios' });
   }
+  const email = String(correo).toLowerCase().trim();
+  try {
+    const pool = getPool();
+    const [ex] = await pool.query('SELECT id FROM users WHERE email=? LIMIT 1', [email]);
+    if (ex.length) return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
+    const [result] = await pool.query(
+      'INSERT INTO users (nombre,email,password_hash,role,empresa_id,telefono,direccion,whatsapp,activo) VALUES (?,?,?,?,NULL,?,?,?,1)',
+      [nombre.trim(), email, hashPassword(String(password)), 'cliente', telefono || '', direccion || '', whatsapp || '']);
+    const token = signToken({ id: result.insertId, nombre: nombre.trim(), role: 'cliente', empresa_id: null, ref_id: null });
+    res.json({ token, user: { id: result.insertId, nombre: nombre.trim(), email, role: 'cliente' } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/me', requireAuth, (req, res) => res.json({ user: req.user }));
