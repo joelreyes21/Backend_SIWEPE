@@ -13,7 +13,8 @@ Hoy un cliente (login por nombre+contraseña) pertenece a UNA sola empresa: la t
 - Listado de "mis pedidos" cruzando todas las empresas donde el cliente compró.
 - Chat de pedidos (cliente↔admin) migrado a rutas propias, ya que deja de vivir en `/api/state` para el cliente.
 - Migración de esquema simple (sin preservar datos históricos de `clientes` — proyecto en etapa temprana, confirmado con el usuario).
-- Fuera de alcance: cambios al lado admin/proveedor de `/api/state` (sigue igual); verificación por correo para el registro de cliente (se decidió no agregarla); validación de stock disponible en el checkout (el sistema no la tiene hoy tampoco, se mantiene así); rutas o lógica del lado admin para responder mensajes (no cambian).
+- El directorio de clientes que ve el admin/proveedor en `/api/state` deja de ser una tabla propia que administra — pasa a **derivarse** de sus pedidos (ver sección dedicada más abajo). Esto es un cambio necesario descubierto durante el diseño, no un extra: la tabla `clientes` que hoy alimenta ese directorio es la misma que se elimina para globalizar el login.
+- Fuera de alcance: rutas o lógica del lado admin para responder mensajes (no cambian); verificación por correo para el registro de cliente (se decidió no agregarla); validación de stock disponible en el checkout (el sistema no la tiene hoy tampoco, se mantiene así).
 
 ## Diseño
 
@@ -83,6 +84,14 @@ POST /api/pedidos/:empresaId/:pedidoId/mensajes   { texto }   (requireAuth, requ
 
 Reemplazan la porción de chat que hoy vive dentro de `guardarEstadoCliente`. Antes de leer/escribir, valida `SELECT id FROM pedidos WHERE empresa_id=:empresaId AND id=:pedidoId AND cliente_id=<req.user.id>` — si no matchea (no existe o es de otro cliente), `404` genérico (mismo mensaje para ambos casos, para no filtrar existencia de pedidos ajenos). Un mensaje nuevo del cliente siempre se guarda con `autor='cliente'` (nunca puede hacerse pasar por `'admin'`, igual que hoy). El lado admin (leer/responder mensajes vía `/api/state`) no cambia.
 
+### Directorio de clientes del admin/proveedor (derivado, no gestionado)
+
+Hoy `GET /api/state` para admin/proveedor lee `SELECT * FROM clientes WHERE empresa_id=?` (incluye el PIN hasheado) y `guardarEstadoCompleto()` borra/reinserta esa tabla completa a partir del payload — es el mismo mecanismo que el admin usa para dar de alta clientes a mano y resetear su PIN. Al eliminar `clientes`, ese directorio se **deriva** en su lugar:
+
+- `GET /api/state` (admin/proveedor): el campo `clientes` de la respuesta pasa a calcularse con `SELECT DISTINCT users.id, users.nombre, users.email AS correo, users.telefono, users.direccion, users.whatsapp FROM users JOIN pedidos ON pedidos.cliente_id = users.id WHERE pedidos.empresa_id = ? AND users.role = 'cliente'` — es decir, todo cliente que tenga al menos un pedido en esa empresa. Ya no incluye `pin` (no existe más de ese lado). Un cliente que se registró pero nunca compró en esa empresa no aparece — es la consecuencia esperada de que ya no hay una relación de "alta" cliente↔empresa, solo la de haber comprado.
+- `guardarEstadoCompleto()`: se quita `'clientes'` del loop de `DELETE FROM ... WHERE empresa_id=?` (línea con la lista de tablas) y se elimina por completo el bloque `for (const x of db.clientes || [])` que insertaba filas en `clientes`. Si el front todavía manda `db.clientes` en el payload (código viejo sin actualizar), simplemente se ignora — no rompe nada, solo deja de tener efecto.
+- El admin **ya no puede** dar de alta un cliente a mano ni resetearle la contraseña — el cliente se registra solo (`POST /api/auth/register`) y gestiona su propia contraseña (`PUT /api/clientes/mi`, `/api/auth/olvide`+`/api/auth/reset`). Esto es una pérdida de funcionalidad real respecto a hoy (antes el admin podía "resetear el PIN" de un cliente que se lo pedía en persona); se acepta como parte de este diseño porque el login ahora vive fuera del control de una sola empresa.
+
 ### `/api/state` para el rol cliente
 
 `GET`/`PUT /api/state` dejan de aceptar `role='cliente'`: responden `403 { error: 'Los clientes ya no usan /api/state; usá /api/marketplace, /api/catalog, /api/pedidos/checkout, /api/mis-pedidos' }`. Esto es lo que habilita el resto del diseño — sin este corte, `guardarEstadoCliente` seguiría asumiendo "un cliente = una empresa" en conflicto con el modelo nuevo. El comportamiento para `admin`/`proveedor` no cambia.
@@ -105,4 +114,5 @@ Sin suite automatizada (mismo estado que Spec A) — verificación manual:
 5. `GET /api/mis-pedidos` del cliente que hizo el checkout → debe traer ambos pedidos, cada uno con su `empresa` correcta.
 6. Probar el chat: `POST` y luego `GET /api/pedidos/:empresaId/:pedidoId/mensajes` sobre uno de los pedidos creados; confirmar que otro cliente no puede ver esos mensajes (404 al intentar con su propio token).
 7. Repetir el checkout del paso 4 pero con un `producto_id` inválido en uno de los grupos → confirmar que NINGÚN pedido se crea (todo-o-nada) y la respuesta indica el error.
-8. Loguear como cliente y llamar `GET /api/state` → confirmar `403` con el mensaje orientando a las rutas nuevas. Confirmar que `GET /api/state` para admin/proveedor sigue funcionando sin cambios.
+8. Loguear como cliente y llamar `GET /api/state` → confirmar `403` con el mensaje orientando a las rutas nuevas.
+9. Loguear como el admin de una de las 2 empresas del paso 4 y llamar `GET /api/state` → el campo `clientes` debe traer al cliente que compró ahí (sin `pin`). Loguear como admin de una empresa donde ese cliente NO compró → no debe aparecer en su `clientes`.
