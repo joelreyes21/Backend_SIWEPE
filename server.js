@@ -6,7 +6,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const { initDb, getPool } = require('./db');
-const { hashPassword, checkPassword, signToken, requireAuth, requireRole, isHashed } = require('./auth');
+const { hashPassword, checkPassword, signToken, requireAuth, requireRole } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -452,6 +452,9 @@ function mapPedidos(peds, items) {
    propios pedidos y los mensajes de esos pedidos (nunca los de otros clientes,
    ni el PIN del admin, ni compras/ventas/proveedores). */
 app.get('/api/state', requireAuth, async (req, res) => {
+  if (req.user.role === 'cliente') {
+    return res.status(403).json({ error: 'Los clientes ya no usan /api/state; usá /api/marketplace, /api/catalog, /api/pedidos/checkout, /api/mis-pedidos' });
+  }
   try {
     const empresaId = req.user.empresa_id;
     if (!empresaId) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
@@ -462,30 +465,13 @@ app.get('/api/state', requireAuth, async (req, res) => {
     const [prods] = await pool.query('SELECT * FROM productos WHERE empresa_id=?', [empresaId]);
     const cfgBase = cfg || { nombre: 'SIWEPE', moneda: 'L', tema: 'cielo' };
 
-    if (req.user.role === 'cliente') {
-      const refId = req.user.ref_id;
-      const [clientes] = await pool.query('SELECT * FROM clientes WHERE empresa_id=? AND id=?', [empresaId, refId]);
-      const [peds] = await pool.query('SELECT * FROM pedidos WHERE empresa_id=? AND cliente_id=?', [empresaId, refId]);
-      const pedIds = peds.map(p => p.id);
-      const [items] = pedIds.length ? await pool.query('SELECT * FROM pedido_items WHERE empresa_id=? AND pedido_id IN (?)', [empresaId, pedIds]) : [[]];
-      const [mensajes] = pedIds.length ? await pool.query('SELECT * FROM mensajes WHERE empresa_id=? AND pedido_id IN (?)', [empresaId, pedIds]) : [[]];
-
-      return res.json({
-        config: { nombre: cfgBase.nombre, logo: cfgBase.logo || '', moneda: cfgBase.moneda, tema: cfgBase.tema, banners: arr(cfgBase.banners), pago: cfgBase.pago || {} },
-        seq: meta ? meta.seq : {},
-        categorias,
-        proveedores: [],
-        clientes: clientes.map(c => ({ id: c.id, nombre: c.nombre, telefono: c.telefono, correo: c.correo, direccion: c.direccion, whatsapp: c.whatsapp, registrado: !!c.registrado })),
-        productos: prods.map(mapProducto),
-        compras: [], ventas: [], movimientos: [],
-        pedidos: mapPedidos(peds, items),
-        mensajes: mensajes.map(m => ({ id: m.id, pedido_id: m.pedido_id, autor: m.autor, texto: m.texto, fecha: m.fecha, leido: !!m.leido })),
-      });
-    }
-
     // admin / proveedor: estado completo del negocio (de SU empresa)
     const [proveedores] = await pool.query('SELECT id,nombre,telefono,correo,empresa,direccion,whatsapp,estado FROM proveedores WHERE empresa_id=?', [empresaId]);
-    const [clientes] = await pool.query('SELECT * FROM clientes WHERE empresa_id=?', [empresaId]);
+    // `clientes` ya no es una tabla propia: se deriva de quién le compró a esta empresa.
+    const [clientes] = await pool.query(
+      `SELECT DISTINCT users.id, users.nombre, users.email AS correo, users.telefono, users.direccion, users.whatsapp
+       FROM users JOIN pedidos ON pedidos.cliente_id = users.id
+       WHERE pedidos.empresa_id = ? AND users.role = 'cliente'`, [empresaId]);
     const [compras] = await pool.query('SELECT * FROM compras WHERE empresa_id=?', [empresaId]);
     const [ventas] = await pool.query('SELECT * FROM ventas WHERE empresa_id=?', [empresaId]);
     const [movimientos] = await pool.query('SELECT id,tipo,signo,producto_id,cantidad,fecha,usuario,obs FROM movimientos WHERE empresa_id=?', [empresaId]);
@@ -498,7 +484,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
       seq: meta ? meta.seq : {},
       categorias,
       proveedores,
-      clientes: clientes.map(c => ({ ...c, registrado: !!c.registrado })),
+      clientes,
       productos: prods.map(mapProducto),
       compras: compras.map(x => ({ ...x, precio: num(x.precio) })),
       ventas: ventas.map(x => ({ ...x, precio: num(x.precio), total: num(x.total) })),
@@ -518,7 +504,7 @@ async function guardarEstadoCompleto(c, E, db) {
     // DELETE (no TRUNCATE): TRUNCATE hace commit implícito en MySQL/InnoDB, lo que
     // rompería la atomicidad de la transacción — un error a mitad de esta función
     // dejaría las tablas ya "truncadas" vacías para siempre, sin poder revertir.
-    for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','clientes','proveedores','categorias'])
+    for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','proveedores','categorias'])
       await c.query(`DELETE FROM ${t} WHERE empresa_id=?`, [E]);
 
     if (db.config) {
@@ -535,9 +521,6 @@ async function guardarEstadoCompleto(c, E, db) {
       await c.query('INSERT INTO categorias (empresa_id,id,nombre,descripcion,estado) VALUES (?,?,?,?,?)', [E, x.id, x.nombre, x.descripcion || '', x.estado || 'activo']);
     for (const x of db.proveedores || [])
       await c.query('INSERT INTO proveedores (empresa_id,id,nombre,telefono,correo,empresa,direccion,whatsapp,estado) VALUES (?,?,?,?,?,?,?,?,?)', [E, x.id, x.nombre, x.telefono || '', x.correo || '', x.empresa || '', x.direccion || '', x.whatsapp || '', x.estado || 'activo']);
-    for (const x of db.clientes || [])
-      await c.query('INSERT INTO clientes (empresa_id,id,nombre,telefono,correo,direccion,whatsapp,pin,registrado) VALUES (?,?,?,?,?,?,?,?,?)',
-        [E, x.id, x.nombre, x.telefono || '', x.correo || '', x.direccion || '', x.whatsapp || '', isHashed(x.pin) ? x.pin : hashPassword(String(x.pin || '0000')), x.registrado ? 1 : 0]);
     for (const x of db.productos || [])
       await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_min,imagen,estado,destacado,marca,tipo_piel) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         [E, x.id, x.codigo || '', x.nombre, x.categoria_id || null, x.descripcion || '', num(x.precio_compra), num(x.precio_venta), num(x.stock), num(x.stock_min), x.imagen || '', x.estado || 'activo', x.destacado ? 1 : 0, x.marca || '', JSON.stringify(x.tipoPiel || [])]);
@@ -561,93 +544,10 @@ async function guardarEstadoCompleto(c, E, db) {
   }
 }
 
-/* ───────── GUARDAR ESTADO (cliente) ─────────
-   Un cliente sólo puede: crear/ampliar/cancelar SUS PROPIOS pedidos (mientras
-   sigan 'pendiente'), enviar mensajes en el chat de esos pedidos (como
-   'cliente', nunca suplantando a 'admin') y marcar como leídos los mensajes
-   que le contestaron. Todo lo demás del payload (productos, precios,
-   categorías, proveedores, compras, ventas, movimientos, config, otros
-   clientes u otros pedidos) se ignora por completo: nunca se toca esa tabla. */
-async function guardarEstadoCliente(c, E, refId, db) {
-  // ── Pedidos propios ── (todo acotado a la empresa E del cliente)
-  const pedidosEnviados = (db.pedidos || []).filter(p => p && p.cliente_id === refId && p.id != null);
-  const idsEnviados = pedidosEnviados.map(p => p.id);
-  const [existentesRows] = idsEnviados.length
-    ? await c.query('SELECT id, cliente_id, estado FROM pedidos WHERE empresa_id=? AND id IN (?)', [E, idsEnviados])
-    : [[]];
-  const existentePorId = new Map(existentesRows.map(p => [p.id, p]));
-
-  for (const p of pedidosEnviados) {
-    const existente = existentePorId.get(p.id);
-    if (existente && existente.cliente_id !== refId) continue;   // id ya usado por otro cliente: ignorar
-    if (existente && existente.estado !== 'pendiente') continue; // ya no editable (aprobado/entregado/cancelado)
-
-    const items = arr(p.items);
-    const productoIds = [...new Set(items.map(it => it && it.producto_id).filter(Boolean))];
-    const [prodRows] = productoIds.length
-      ? await c.query('SELECT id, precio_venta FROM productos WHERE empresa_id=? AND id IN (?)', [E, productoIds])
-      : [[]];
-    const precios = new Map(prodRows.map(pr => [pr.id, num(pr.precio_venta)]));
-
-    const itemsCalc = items
-      .filter(it => it && precios.has(it.producto_id) && num(it.cantidad) > 0)
-      .map(it => {
-        const precio = precios.get(it.producto_id);
-        const cantidad = num(it.cantidad);
-        return { producto_id: it.producto_id, cantidad, precio, subtotal: +(precio * cantidad).toFixed(2) };
-      });
-    const total = +itemsCalc.reduce((s, i) => s + i.subtotal, 0).toFixed(2);
-    const nota = String(p.nota || '').slice(0, 500);
-    const estado = p.estado === 'cancelado' ? 'cancelado' : 'pendiente'; // el cliente no puede fijar 'aprobado'/'entregado'
-    const comprobante = String(p.comprobante || '');
-    const metodoPago = String(p.metodoPago || '');
-
-    if (!existente) {
-      const fecha = new Date().toISOString().slice(0, 10);
-      await c.query('INSERT INTO pedidos (empresa_id,id,cliente_id,total,nota,fecha,estado,metodo_pago,comprobante) VALUES (?,?,?,?,?,?,?,?,?)',
-        [E, p.id, refId, total, nota, fecha, estado, metodoPago, comprobante]);
-    } else {
-      await c.query('UPDATE pedidos SET total=?,nota=?,estado=?,metodo_pago=?,comprobante=? WHERE empresa_id=? AND id=? AND cliente_id=?',
-        [total, nota, estado, metodoPago, comprobante, E, p.id, refId]);
-      await c.query('DELETE FROM pedido_items WHERE empresa_id=? AND pedido_id=?', [E, p.id]);
-    }
-    for (const it of itemsCalc)
-      await c.query('INSERT INTO pedido_items (empresa_id,pedido_id,producto_id,cantidad,precio,subtotal) VALUES (?,?,?,?,?,?)',
-        [E, p.id, it.producto_id, it.cantidad, it.precio, it.subtotal]);
-  }
-
-  // ── Mensajes de chat, sólo dentro de pedidos propios ──
-  const [pedRows] = await c.query('SELECT id FROM pedidos WHERE empresa_id=? AND cliente_id=?', [E, refId]);
-  const misPedidoIds = new Set(pedRows.map(r => r.id));
-  const [msgRows] = misPedidoIds.size
-    ? await c.query('SELECT id, autor FROM mensajes WHERE empresa_id=? AND pedido_id IN (?)', [E, [...misPedidoIds]])
-    : [[]];
-  const msgExistente = new Map(msgRows.map(m => [m.id, m]));
-
-  for (const m of db.mensajes || []) {
-    if (!m || m.id == null || !misPedidoIds.has(m.pedido_id)) continue; // mensaje fuera de sus pedidos: ignorar
-    const existente = msgExistente.get(m.id);
-    if (!existente) {
-      // Mensaje nuevo: siempre se crea a nombre de 'cliente', nunca suplantando al admin
-      await c.query('INSERT INTO mensajes (empresa_id,id,pedido_id,autor,texto,fecha,leido) VALUES (?,?,?,?,?,?,?)',
-        [E, m.id, m.pedido_id, 'cliente', String(m.texto || '').slice(0, 2000), dtMysql(new Date().toISOString()), 0]);
-    } else if (existente.autor !== 'cliente') {
-      // Mensaje del admin: sólo se permite marcarlo como leído
-      await c.query('UPDATE mensajes SET leido=? WHERE empresa_id=? AND id=?', [m.leido ? 1 : 0, E, m.id]);
-    }
-    // Mensaje propio ya existente: no editable, se ignora
-  }
-
-  // ── Secuencias: sólo avanzan (nunca retroceden) y sólo para pedido/mensaje ──
-  const [[meta]] = await c.query('SELECT seq FROM app_meta WHERE empresa_id=?', [E]);
-  const seqActual = (meta && meta.seq) || {};
-  const seqEnviado = (db.seq && typeof db.seq === 'object') ? db.seq : {};
-  const seqNuevo = { ...seqActual };
-  for (const k of ['pedido', 'mensaje']) seqNuevo[k] = Math.max(num(seqActual[k]), num(seqEnviado[k]));
-  await c.query('INSERT INTO app_meta (empresa_id,seq) VALUES (?,?) ON DUPLICATE KEY UPDATE seq=VALUES(seq)', [E, JSON.stringify(seqNuevo)]);
-}
-
 app.put('/api/state', requireAuth, async (req, res) => {
+  if (req.user.role === 'cliente') {
+    return res.status(403).json({ error: 'Los clientes ya no usan /api/state; usá /api/marketplace, /api/catalog, /api/pedidos/checkout, /api/mis-pedidos' });
+  }
   const db = req.body || {};
   const pool = getPool();
   const c = await pool.getConnection();
@@ -655,8 +555,7 @@ app.put('/api/state', requireAuth, async (req, res) => {
   if (!E) { c.release(); return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' }); }
   try {
     await c.beginTransaction();
-    if (req.user.role === 'cliente') await guardarEstadoCliente(c, E, req.user.ref_id, db);
-    else await guardarEstadoCompleto(c, E, db);
+    await guardarEstadoCompleto(c, E, db);
     await c.commit();
     res.json({ ok: true });
   } catch (e) {
@@ -687,14 +586,6 @@ async function asegurarBase() {
     await pool.query('INSERT IGNORE INTO app_meta (empresa_id,seq) VALUES (?,?)',
       [e.id, JSON.stringify({ producto: 0, categoria: 0, proveedor: 0, cliente: 0, compra: 0, venta: 0, movimiento: 0, pedido: 0, mensaje: 0 })]);
   }
-
-  // Migra a bcrypt los PIN de clientes que hayan quedado en texto plano
-  // (bases creadas antes de este cambio). Idempotente: no toca lo ya migrado.
-  const [pendientes] = await pool.query("SELECT empresa_id, id, pin FROM clientes WHERE pin NOT LIKE '$2%'");
-  for (const cl of pendientes) {
-    await pool.query('UPDATE clientes SET pin=? WHERE empresa_id=? AND id=?', [hashPassword(String(cl.pin || '0000')), cl.empresa_id, cl.id]);
-  }
-  if (pendientes.length) console.log(`PIN de ${pendientes.length} cliente(s) migrado(s) a bcrypt.`);
 
   // Limpia solicitudes de registro sin confirmar con más de 24h (nunca fueron empresa).
   try { await pool.query('DELETE FROM registros_pendientes WHERE created_at < (NOW() - INTERVAL 24 HOUR)'); }

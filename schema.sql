@@ -77,15 +77,19 @@ CREATE TABLE IF NOT EXISTS app_meta (
   seq        JSON
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Usuarios del sistema (admin/proveedor por email+clave; el cliente va en `clientes`)
+-- Usuarios del sistema: admin/proveedor/cliente, todos por email+clave.
+-- El cliente es una cuenta GLOBAL (empresa_id=NULL), no ligada a una tienda.
 CREATE TABLE IF NOT EXISTS users (
   id            INT AUTO_INCREMENT PRIMARY KEY,
   nombre        VARCHAR(80)  NOT NULL,
   email         VARCHAR(120) UNIQUE,
   password_hash VARCHAR(120) NOT NULL,
   role          ENUM('admin','proveedor','cliente') NOT NULL DEFAULT 'cliente',
-  empresa_id    INT,                       -- empresa a la que pertenece (NULL = admin de plataforma)
-  ref_id        INT,                       -- id de cliente/proveedor asociado (si aplica)
+  empresa_id    INT,                       -- empresa a la que pertenece (NULL = admin de plataforma o cliente global)
+  ref_id        INT,                       -- id de proveedor asociado (si aplica)
+  telefono      VARCHAR(30),                -- solo se usa cuando role='cliente'
+  direccion     VARCHAR(160),               -- solo se usa cuando role='cliente'
+  whatsapp      VARCHAR(24),                -- solo se usa cuando role='cliente'
   activo        TINYINT NOT NULL DEFAULT 1,
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -110,20 +114,6 @@ CREATE TABLE IF NOT EXISTS proveedores (
   whatsapp   VARCHAR(24),
   estado     VARCHAR(12) NOT NULL DEFAULT 'activo',
   PRIMARY KEY (empresa_id, id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS clientes (
-  empresa_id INT NOT NULL,
-  id         INT NOT NULL,
-  nombre     VARCHAR(80) NOT NULL,
-  telefono   VARCHAR(30),
-  correo     VARCHAR(120),
-  direccion  VARCHAR(160),
-  whatsapp   VARCHAR(24),
-  pin        VARCHAR(60) NOT NULL DEFAULT '0000',
-  registrado TINYINT NOT NULL DEFAULT 1,
-  PRIMARY KEY (empresa_id, id),
-  KEY idx_cli_nombre (empresa_id, nombre)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS productos (

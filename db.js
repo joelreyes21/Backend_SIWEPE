@@ -19,6 +19,7 @@ function getCfg() {
       password: decodeURIComponent(u.password || ''),
       database: (u.pathname || '/railway').slice(1) || 'railway',
     };
+ 
   }
   return {
     host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
@@ -66,6 +67,26 @@ async function _migrarMultiEmpresa(pool, schema) {
   }
 }
 
+/* Convierte las cuentas de cliente de "una tabla por empresa" (clientes) a
+   "una fila global en users" (role='cliente', empresa_id=NULL). Idempotente:
+   si ya está migrada (existen las columnas nuevas y no existe `clientes`),
+   no hace nada. Etapa temprana del proyecto: no se preservan filas viejas
+   de `clientes`, se descartan junto con la tabla. */
+async function _migrarClienteGlobal(pool) {
+  const [tc] = await pool.query("SHOW COLUMNS FROM users LIKE 'telefono'");
+  if (!tc.length) {
+    await pool.query(
+      'ALTER TABLE users ADD COLUMN telefono VARCHAR(30) NULL, ' +
+      'ADD COLUMN direccion VARCHAR(160) NULL, ADD COLUMN whatsapp VARCHAR(24) NULL'
+    );
+  }
+  const [ct] = await pool.query("SHOW TABLES LIKE 'clientes'");
+  if (ct.length) {
+    console.warn('Migrando cuentas de cliente a users (cuenta global): eliminando tabla clientes vieja.');
+    await pool.query('DROP TABLE clientes');
+  }
+}
+
 async function initDb(reintentos = 6) {
   let ultimoError;
   for (let i = 1; i <= reintentos; i++) {
@@ -81,6 +102,7 @@ async function initDb(reintentos = 6) {
       // CREATE TABLE IF NOT EXISTS no altera tablas ya existentes, así que si la base
       // trae la forma vieja (mono-empresa) hay que adaptarla.
       await _migrarMultiEmpresa(pool, schema);
+      await _migrarClienteGlobal(pool);
       // Migración para bases creadas antes de que `pin` pasara a guardar un hash bcrypt
       // (CREATE TABLE IF NOT EXISTS no amplía columnas en tablas que ya existían).
       try { await pool.query("ALTER TABLE clientes MODIFY pin VARCHAR(60) NOT NULL DEFAULT '0000'"); }
