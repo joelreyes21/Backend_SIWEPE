@@ -332,6 +332,89 @@ app.put('/api/clientes/mi', requireAuth, requireRole('cliente'), async (req, res
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/* ───────── CHECKOUT (cliente) ─────────
+   El carrito puede tener productos de varias empresas. Se agrupa por
+   empresa_id y se crea UN pedido por empresa, todo dentro de una sola
+   transacción: si algo no resuelve (empresa inactiva, producto inexistente
+   o inactivo en esa empresa), se aborta TODO el checkout, sin pedidos
+   parciales. Los precios siempre se recalculan server-side. */
+app.post('/api/pedidos/checkout', requireAuth, requireRole('cliente'), async (req, res) => {
+  const items = arr(req.body && req.body.items);
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'El carrito está vacío' });
+  const nota = String((req.body && req.body.nota) || '').slice(0, 500);
+  const metodoPago = String((req.body && req.body.metodoPago) || '');
+  const comprobante = String((req.body && req.body.comprobante) || '');
+
+  const porEmpresa = new Map();
+  for (const it of items) {
+    const empresaId = it && num(it.empresa_id);
+    const productoId = it && num(it.producto_id);
+    const cantidad = it && num(it.cantidad);
+    if (!empresaId || !productoId || cantidad <= 0) {
+      return res.status(400).json({ error: 'Item de carrito inválido: falta empresa_id, producto_id o cantidad' });
+    }
+    if (!porEmpresa.has(empresaId)) porEmpresa.set(empresaId, []);
+    porEmpresa.get(empresaId).push({ producto_id: productoId, cantidad });
+  }
+
+  const pool = getPool();
+  const c = await pool.getConnection();
+  try {
+    await c.beginTransaction();
+    const pedidosCreados = [];
+
+    for (const [empresaId, itemsEmpresa] of porEmpresa) {
+      const [[emp]] = await c.query("SELECT id, slug, nombre, rubro, ciudad, logo FROM empresas WHERE id=? AND estado='activa'", [empresaId]);
+      if (!emp) { await c.rollback(); return res.status(400).json({ error: `La tienda ${empresaId} no existe o no está activa` }); }
+
+      const productoIds = itemsEmpresa.map(it => it.producto_id);
+      const [prodRows] = await c.query(
+        "SELECT id, precio_venta FROM productos WHERE empresa_id=? AND estado='activo' AND id IN (?)",
+        [empresaId, productoIds]);
+      const precios = new Map(prodRows.map(pr => [pr.id, num(pr.precio_venta)]));
+
+      const itemsCalc = itemsEmpresa.map(it => {
+        if (!precios.has(it.producto_id)) return null;
+        const precio = precios.get(it.producto_id);
+        return { producto_id: it.producto_id, cantidad: it.cantidad, precio, subtotal: +(precio * it.cantidad).toFixed(2) };
+      });
+      if (itemsCalc.some(x => x === null)) {
+        await c.rollback();
+        return res.status(400).json({ error: `Uno o más productos de la tienda "${emp.nombre}" ya no están disponibles` });
+      }
+
+      const total = +itemsCalc.reduce((s, i) => s + i.subtotal, 0).toFixed(2);
+
+      const [mrows] = await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE', [empresaId]);
+      const seq = (mrows[0] && mrows[0].seq) || {};
+      const [maxr] = await c.query('SELECT COALESCE(MAX(id),0) AS m FROM pedidos WHERE empresa_id=?', [empresaId]);
+      const nid = Math.max(num(seq.pedido), maxr[0].m) + 1;
+      const fecha = new Date().toISOString().slice(0, 10);
+
+      await c.query('INSERT INTO pedidos (empresa_id,id,cliente_id,total,nota,fecha,estado,metodo_pago,comprobante) VALUES (?,?,?,?,?,?,?,?,?)',
+        [empresaId, nid, req.user.id, total, nota, fecha, 'pendiente', metodoPago, comprobante]);
+      for (const it of itemsCalc)
+        await c.query('INSERT INTO pedido_items (empresa_id,pedido_id,producto_id,cantidad,precio,subtotal) VALUES (?,?,?,?,?,?)',
+          [empresaId, nid, it.producto_id, it.cantidad, it.precio, it.subtotal]);
+
+      seq.pedido = nid;
+      await c.query('UPDATE app_meta SET seq=? WHERE empresa_id=?', [JSON.stringify(seq), empresaId]);
+
+      pedidosCreados.push({
+        id: nid, cliente_id: req.user.id, total, nota, fecha, estado: 'pendiente',
+        metodoPago, comprobante, items: itemsCalc,
+        empresa: { id: emp.id, slug: emp.slug, nombre: emp.nombre, rubro: emp.rubro || '', ciudad: emp.ciudad || '', logo: emp.logo || '' },
+      });
+    }
+
+    await c.commit();
+    res.json({ pedidos: pedidosCreados });
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally { c.release(); }
+});
+
 // Crear (o actualizar) un usuario del sistema — solo un admin puede hacerlo
 app.post('/api/users', requireAuth, requireRole('admin'), async (req, res) => {
   try {
