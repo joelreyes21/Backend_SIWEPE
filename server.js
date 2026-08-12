@@ -6,7 +6,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const { initDb, getPool } = require('./db');
-const { hashPassword, checkPassword, signToken, requireAuth, requireRole, isHashed } = require('./auth');
+const { hashPassword, checkPassword, signToken, requireAuth, requireRole } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -260,58 +260,23 @@ app.post('/api/auth/reset', limitarIntentos(8, 15 * 60 * 1000), async (req, res)
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Cliente (nombre + contraseña) — la columna se sigue llamando `pin` en la
-// base de datos por compatibilidad, pero ya no está limitada a dígitos.
-app.post('/api/auth/cliente-login', limitarIntentos(8, 10 * 60 * 1000), async (req, res) => {
-  try {
-    const { nombre, pin, empresa } = req.body || {};
-    if (!nombre || !pin) return res.status(400).json({ error: 'Faltan datos' });
-    const empresaId = await empresaIdDe(empresa);
-    if (!empresaId) return res.status(400).json({ error: 'Tienda no válida' });
-    const [rows] = await getPool().query('SELECT * FROM clientes WHERE empresa_id=? AND LOWER(nombre)=? LIMIT 1', [empresaId, String(nombre).toLowerCase().trim()]);
-    const c = rows[0];
-    if (!c || !checkPassword(String(pin).trim(), c.pin)) return res.status(401).json({ error: 'Nombre o contraseña incorrectos' });
-    const token = signToken({ id: c.id, nombre: c.nombre, role: 'cliente', empresa_id: empresaId, ref_id: c.id });
-    res.json({ token, cliente: c });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Registro de cliente nuevo
+// Registro de cliente nuevo — cuenta global (correo+contraseña), no ligada a una empresa
 app.post('/api/auth/register', limitarIntentos(6, 10 * 60 * 1000), async (req, res) => {
-  const { nombre, pin, telefono, correo, direccion, empresa } = req.body || {};
-  if (!nombre || !pin || String(pin).length < 6) return res.status(400).json({ error: 'Nombre y contraseña (mín. 6 caracteres) obligatorios' });
-  const empresaId = await empresaIdDe(empresa);
-  if (!empresaId) return res.status(400).json({ error: 'Tienda no válida' });
-  const pool = getPool();
-  const c = await pool.getConnection();
-  try {
-    await c.beginTransaction();
-    // Bloquea la fila de secuencias de ESTA empresa para serializar altas concurrentes
-    // y evitar que dos registros al mismo tiempo calculen el mismo id de cliente.
-    const [mrows] = await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE', [empresaId]);
-    const [dup] = await c.query('SELECT id FROM clientes WHERE empresa_id=? AND LOWER(nombre)=? LIMIT 1', [empresaId, String(nombre).toLowerCase().trim()]);
-    if (dup.length) {
-      await c.rollback();
-      return res.status(409).json({ error: 'Ya existe un cliente con ese nombre en esta tienda' });
-    }
-    // siguiente id (respeta la secuencia del front-end, por empresa)
-    const seq = mrows[0] ? mrows[0].seq : {};
-    const [maxr] = await c.query('SELECT COALESCE(MAX(id),0) AS m FROM clientes WHERE empresa_id=?', [empresaId]);
-    const nid = Math.max(seq.cliente || 0, maxr[0].m) + 1;
-    await c.query('INSERT INTO clientes (empresa_id,id,nombre,telefono,correo,direccion,whatsapp,pin,registrado) VALUES (?,?,?,?,?,?,?,?,1)',
-      [empresaId, nid, nombre.trim(), telefono || '—', correo || '—', direccion || '—', '', hashPassword(String(pin).trim())]);
-    seq.cliente = nid;
-    await c.query('UPDATE app_meta SET seq=? WHERE empresa_id=?', [JSON.stringify(seq), empresaId]);
-    await c.commit();
-    const [rows] = await pool.query('SELECT * FROM clientes WHERE empresa_id=? AND id=?', [empresaId, nid]);
-    const token = signToken({ id: nid, nombre: nombre.trim(), role: 'cliente', empresa_id: empresaId, ref_id: nid });
-    res.json({ token, cliente: rows[0] });
-  } catch (e) {
-    await c.rollback().catch(() => {});
-    res.status(500).json({ error: e.message });
-  } finally {
-    c.release();
+  const { nombre, correo, password, telefono, direccion, whatsapp } = req.body || {};
+  if (!nombre || !String(nombre).trim() || !correo || !password || String(password).length < 8) {
+    return res.status(400).json({ error: 'Nombre, correo y contraseña (mín. 8 caracteres) obligatorios' });
   }
+  const email = String(correo).toLowerCase().trim();
+  try {
+    const pool = getPool();
+    const [ex] = await pool.query('SELECT id FROM users WHERE email=? LIMIT 1', [email]);
+    if (ex.length) return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
+    const [result] = await pool.query(
+      'INSERT INTO users (nombre,email,password_hash,role,empresa_id,telefono,direccion,whatsapp,activo) VALUES (?,?,?,?,NULL,?,?,?,1)',
+      [nombre.trim(), email, hashPassword(String(password)), 'cliente', telefono || '', direccion || '', whatsapp || '']);
+    const token = signToken({ id: result.insertId, nombre: nombre.trim(), role: 'cliente', empresa_id: null, ref_id: null });
+    res.json({ token, user: { id: result.insertId, nombre: nombre.trim(), email, role: 'cliente' } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/me', requireAuth, (req, res) => res.json({ user: req.user }));
@@ -347,22 +312,190 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
 });
 
 /* ───────── PERFIL DE MI CUENTA (cliente) ─────────
-   nombre/telefono/correo/direccion/whatsapp viven en `clientes`. GET /api/state
-   ya devuelve la fila propia del cliente logueado, pero PUT /api/state la
-   ignora por completo (guardarEstadoCliente sólo toca pedidos/mensajes) —
-   esta ruta es la única forma de editarla después del registro. */
+   nombre/telefono/correo/direccion/whatsapp viven ahora en `users` (el cliente
+   es una fila global, no una por empresa). Si cambia el correo, se revalida
+   que siga siendo único, porque también es su credencial de login. */
 app.put('/api/clientes/mi', requireAuth, requireRole('cliente'), async (req, res) => {
-  const empresaId = req.user.empresa_id;
-  const refId = req.user.ref_id;
-  if (!empresaId || !refId) return res.status(403).json({ error: 'Sesión de cliente inválida' });
   const { nombre, telefono, correo, direccion, whatsapp } = req.body || {};
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre' });
+  const email = correo ? String(correo).toLowerCase().trim() : null;
   try {
-    await getPool().query(
-      'UPDATE clientes SET nombre=?, telefono=?, correo=?, direccion=?, whatsapp=? WHERE empresa_id=? AND id=?',
-      [String(nombre).trim(), telefono || '', correo || '', direccion || '', whatsapp || '', empresaId, refId]);
+    const pool = getPool();
+    if (email) {
+      const [dup] = await pool.query('SELECT id FROM users WHERE email=? AND id<>? LIMIT 1', [email, req.user.id]);
+      if (dup.length) return res.status(409).json({ error: 'Ese correo ya está en uso' });
+    }
+    await pool.query(
+      'UPDATE users SET nombre=?, telefono=?, email=COALESCE(?,email), direccion=?, whatsapp=? WHERE id=?',
+      [String(nombre).trim(), telefono || '', email, direccion || '', whatsapp || '', req.user.id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* ───────── CHECKOUT (cliente) ─────────
+   El carrito puede tener productos de varias empresas. Se agrupa por
+   empresa_id y se crea UN pedido por empresa, todo dentro de una sola
+   transacción: si algo no resuelve (empresa inactiva, producto inexistente
+   o inactivo en esa empresa), se aborta TODO el checkout, sin pedidos
+   parciales. Los precios siempre se recalculan server-side. */
+app.post('/api/pedidos/checkout', requireAuth, requireRole('cliente'), async (req, res) => {
+  const items = arr(req.body && req.body.items);
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'El carrito está vacío' });
+  const nota = String((req.body && req.body.nota) || '').slice(0, 500);
+  const metodoPago = String((req.body && req.body.metodoPago) || '');
+  const comprobante = String((req.body && req.body.comprobante) || '');
+
+  const porEmpresa = new Map();
+  for (const it of items) {
+    const empresaId = it && num(it.empresa_id);
+    const productoId = it && num(it.producto_id);
+    const cantidad = it && num(it.cantidad);
+    if (!empresaId || !productoId || cantidad <= 0) {
+      return res.status(400).json({ error: 'Item de carrito inválido: falta empresa_id, producto_id o cantidad' });
+    }
+    if (!porEmpresa.has(empresaId)) porEmpresa.set(empresaId, []);
+    porEmpresa.get(empresaId).push({ producto_id: productoId, cantidad });
+  }
+
+  const pool = getPool();
+  const c = await pool.getConnection();
+  try {
+    await c.beginTransaction();
+    const pedidosCreados = [];
+
+    for (const [empresaId, itemsEmpresa] of porEmpresa) {
+      const [[emp]] = await c.query("SELECT id, slug, nombre, rubro, ciudad, logo FROM empresas WHERE id=? AND estado='activa'", [empresaId]);
+      if (!emp) { await c.rollback(); return res.status(400).json({ error: `La tienda ${empresaId} no existe o no está activa` }); }
+
+      const productoIds = itemsEmpresa.map(it => it.producto_id);
+      const [prodRows] = await c.query(
+        "SELECT id, precio_venta FROM productos WHERE empresa_id=? AND estado='activo' AND id IN (?)",
+        [empresaId, productoIds]);
+      const precios = new Map(prodRows.map(pr => [pr.id, num(pr.precio_venta)]));
+
+      const itemsCalc = itemsEmpresa.map(it => {
+        if (!precios.has(it.producto_id)) return null;
+        const precio = precios.get(it.producto_id);
+        return { producto_id: it.producto_id, cantidad: it.cantidad, precio, subtotal: +(precio * it.cantidad).toFixed(2) };
+      });
+      if (itemsCalc.some(x => x === null)) {
+        await c.rollback();
+        return res.status(400).json({ error: `Uno o más productos de la tienda "${emp.nombre}" ya no están disponibles` });
+      }
+
+      const total = +itemsCalc.reduce((s, i) => s + i.subtotal, 0).toFixed(2);
+
+      const [mrows] = await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE', [empresaId]);
+      const seq = (mrows[0] && mrows[0].seq) || {};
+      const [maxr] = await c.query('SELECT COALESCE(MAX(id),0) AS m FROM pedidos WHERE empresa_id=?', [empresaId]);
+      const nid = Math.max(num(seq.pedido), maxr[0].m) + 1;
+      const fecha = new Date().toISOString().slice(0, 10);
+
+      await c.query('INSERT INTO pedidos (empresa_id,id,cliente_id,total,nota,fecha,estado,metodo_pago,comprobante) VALUES (?,?,?,?,?,?,?,?,?)',
+        [empresaId, nid, req.user.id, total, nota, fecha, 'pendiente', metodoPago, comprobante]);
+      for (const it of itemsCalc)
+        await c.query('INSERT INTO pedido_items (empresa_id,pedido_id,producto_id,cantidad,precio,subtotal) VALUES (?,?,?,?,?,?)',
+          [empresaId, nid, it.producto_id, it.cantidad, it.precio, it.subtotal]);
+
+      seq.pedido = nid;
+      await c.query('UPDATE app_meta SET seq=? WHERE empresa_id=?', [JSON.stringify(seq), empresaId]);
+
+      pedidosCreados.push({
+        id: nid, cliente_id: req.user.id, total, nota, fecha, estado: 'pendiente',
+        metodoPago, comprobante, items: itemsCalc,
+        empresa: { id: emp.id, slug: emp.slug, nombre: emp.nombre, rubro: emp.rubro || '', ciudad: emp.ciudad || '', logo: emp.logo || '' },
+      });
+    }
+
+    await c.commit();
+    res.json({ pedidos: pedidosCreados });
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally { c.release(); }
+});
+
+/* ───────── MIS PEDIDOS (cliente) ─────────
+   Todos los pedidos del cliente logueado, en TODAS las empresas donde
+   compró. No reutiliza mapPedidos(): esa función empareja items por
+   pedido_id, que sólo es único DENTRO de una empresa, así que cruzando
+   empresas mezclaría items de pedidos distintos con el mismo id. */
+app.get('/api/mis-pedidos', requireAuth, requireRole('cliente'), async (req, res) => {
+  try {
+    const pool = getPool();
+    const [peds] = await pool.query(
+      `SELECT pedidos.*, empresas.slug AS emp_slug, empresas.nombre AS emp_nombre,
+              empresas.rubro AS emp_rubro, empresas.ciudad AS emp_ciudad, empresas.logo AS emp_logo
+       FROM pedidos JOIN empresas ON pedidos.empresa_id = empresas.id
+       WHERE pedidos.cliente_id = ?
+       ORDER BY pedidos.fecha DESC, pedidos.id DESC`, [req.user.id]);
+
+    const itemsPorPedido = new Map(); // clave "empresaId:pedidoId" -> items[]
+    for (const p of peds) {
+      const [rows] = await pool.query(
+        'SELECT producto_id,cantidad,precio,subtotal FROM pedido_items WHERE empresa_id=? AND pedido_id=?', [p.empresa_id, p.id]);
+      itemsPorPedido.set(`${p.empresa_id}:${p.id}`, rows.map(i => ({
+        producto_id: i.producto_id, cantidad: num(i.cantidad), precio: num(i.precio), subtotal: num(i.subtotal),
+      })));
+    }
+
+    res.json({
+      pedidos: peds.map(p => ({
+        id: p.id, cliente_id: p.cliente_id, total: num(p.total), nota: p.nota || '', fecha: p.fecha,
+        estado: p.estado, metodoPago: p.metodo_pago || '', comprobante: p.comprobante || '',
+        items: itemsPorPedido.get(`${p.empresa_id}:${p.id}`) || [],
+        empresa: { id: p.empresa_id, slug: p.emp_slug, nombre: p.emp_nombre, rubro: p.emp_rubro || '', ciudad: p.emp_ciudad || '', logo: p.emp_logo || '' },
+      })),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ───────── MENSAJES DE UN PEDIDO (cliente) ─────────
+   Reemplaza la porción de chat que antes vivía dentro de PUT /api/state
+   para el cliente (guardarEstadoCliente, eliminada al globalizar la cuenta).
+   Antes de leer/escribir, confirma que el pedido sea del cliente logueado —
+   si no, 404 genérico (no revela si el pedido es de otro cliente o no existe). */
+app.get('/api/pedidos/:empresaId/:pedidoId/mensajes', requireAuth, requireRole('cliente'), async (req, res) => {
+  const empresaId = num(req.params.empresaId);
+  const pedidoId = num(req.params.pedidoId);
+  try {
+    const pool = getPool();
+    const [[pedido]] = await pool.query('SELECT id FROM pedidos WHERE empresa_id=? AND id=? AND cliente_id=?', [empresaId, pedidoId, req.user.id]);
+    if (!pedido) return res.status(404).json({ error: 'Pedido no encontrado' });
+    const [rows] = await pool.query(
+      'SELECT id,pedido_id,autor,texto,fecha,leido FROM mensajes WHERE empresa_id=? AND pedido_id=? ORDER BY fecha ASC, id ASC',
+      [empresaId, pedidoId]);
+    res.json({ mensajes: rows.map(m => ({ ...m, leido: !!m.leido })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/pedidos/:empresaId/:pedidoId/mensajes', requireAuth, requireRole('cliente'), async (req, res) => {
+  const empresaId = num(req.params.empresaId);
+  const pedidoId = num(req.params.pedidoId);
+  const texto = String((req.body && req.body.texto) || '').slice(0, 2000).trim();
+  if (!texto) return res.status(400).json({ error: 'Falta el texto del mensaje' });
+  const pool = getPool();
+  const c = await pool.getConnection();
+  try {
+    const [[pedido]] = await c.query('SELECT id FROM pedidos WHERE empresa_id=? AND id=? AND cliente_id=?', [empresaId, pedidoId, req.user.id]);
+    if (!pedido) { c.release(); return res.status(404).json({ error: 'Pedido no encontrado' }); }
+
+    await c.beginTransaction();
+    const [[meta]] = await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE', [empresaId]);
+    const seq = (meta && meta.seq) || {};
+    const [maxr] = await c.query('SELECT COALESCE(MAX(id),0) AS m FROM mensajes WHERE empresa_id=?', [empresaId]);
+    const nid = Math.max(num(seq.mensaje), maxr[0].m) + 1;
+
+    await c.query('INSERT INTO mensajes (empresa_id,id,pedido_id,autor,texto,fecha,leido) VALUES (?,?,?,?,?,?,0)',
+      [empresaId, nid, pedidoId, 'cliente', texto, dtMysql(new Date().toISOString())]);
+    seq.mensaje = nid;
+    await c.query('UPDATE app_meta SET seq=? WHERE empresa_id=?', [JSON.stringify(seq), empresaId]);
+    await c.commit();
+    res.json({ ok: true, id: nid });
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally { c.release(); }
 });
 
 // Crear (o actualizar) un usuario del sistema — solo un admin puede hacerlo
@@ -452,6 +585,9 @@ function mapPedidos(peds, items) {
    propios pedidos y los mensajes de esos pedidos (nunca los de otros clientes,
    ni el PIN del admin, ni compras/ventas/proveedores). */
 app.get('/api/state', requireAuth, async (req, res) => {
+  if (req.user.role === 'cliente') {
+    return res.status(403).json({ error: 'Los clientes ya no usan /api/state; usá /api/marketplace, /api/catalog, /api/pedidos/checkout, /api/mis-pedidos' });
+  }
   try {
     const empresaId = req.user.empresa_id;
     if (!empresaId) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
@@ -462,30 +598,13 @@ app.get('/api/state', requireAuth, async (req, res) => {
     const [prods] = await pool.query('SELECT * FROM productos WHERE empresa_id=?', [empresaId]);
     const cfgBase = cfg || { nombre: 'SIWEPE', moneda: 'L', tema: 'cielo' };
 
-    if (req.user.role === 'cliente') {
-      const refId = req.user.ref_id;
-      const [clientes] = await pool.query('SELECT * FROM clientes WHERE empresa_id=? AND id=?', [empresaId, refId]);
-      const [peds] = await pool.query('SELECT * FROM pedidos WHERE empresa_id=? AND cliente_id=?', [empresaId, refId]);
-      const pedIds = peds.map(p => p.id);
-      const [items] = pedIds.length ? await pool.query('SELECT * FROM pedido_items WHERE empresa_id=? AND pedido_id IN (?)', [empresaId, pedIds]) : [[]];
-      const [mensajes] = pedIds.length ? await pool.query('SELECT * FROM mensajes WHERE empresa_id=? AND pedido_id IN (?)', [empresaId, pedIds]) : [[]];
-
-      return res.json({
-        config: { nombre: cfgBase.nombre, logo: cfgBase.logo || '', moneda: cfgBase.moneda, tema: cfgBase.tema, banners: arr(cfgBase.banners), pago: cfgBase.pago || {} },
-        seq: meta ? meta.seq : {},
-        categorias,
-        proveedores: [],
-        clientes: clientes.map(c => ({ id: c.id, nombre: c.nombre, telefono: c.telefono, correo: c.correo, direccion: c.direccion, whatsapp: c.whatsapp, registrado: !!c.registrado })),
-        productos: prods.map(mapProducto),
-        compras: [], ventas: [], movimientos: [],
-        pedidos: mapPedidos(peds, items),
-        mensajes: mensajes.map(m => ({ id: m.id, pedido_id: m.pedido_id, autor: m.autor, texto: m.texto, fecha: m.fecha, leido: !!m.leido })),
-      });
-    }
-
     // admin / proveedor: estado completo del negocio (de SU empresa)
     const [proveedores] = await pool.query('SELECT id,nombre,telefono,correo,empresa,direccion,whatsapp,estado FROM proveedores WHERE empresa_id=?', [empresaId]);
-    const [clientes] = await pool.query('SELECT * FROM clientes WHERE empresa_id=?', [empresaId]);
+    // `clientes` ya no es una tabla propia: se deriva de quién le compró a esta empresa.
+    const [clientes] = await pool.query(
+      `SELECT DISTINCT users.id, users.nombre, users.email AS correo, users.telefono, users.direccion, users.whatsapp
+       FROM users JOIN pedidos ON pedidos.cliente_id = users.id
+       WHERE pedidos.empresa_id = ? AND users.role = 'cliente'`, [empresaId]);
     const [compras] = await pool.query('SELECT * FROM compras WHERE empresa_id=?', [empresaId]);
     const [ventas] = await pool.query('SELECT * FROM ventas WHERE empresa_id=?', [empresaId]);
     const [movimientos] = await pool.query('SELECT id,tipo,signo,producto_id,cantidad,fecha,usuario,obs FROM movimientos WHERE empresa_id=?', [empresaId]);
@@ -498,7 +617,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
       seq: meta ? meta.seq : {},
       categorias,
       proveedores,
-      clientes: clientes.map(c => ({ ...c, registrado: !!c.registrado })),
+      clientes,
       productos: prods.map(mapProducto),
       compras: compras.map(x => ({ ...x, precio: num(x.precio) })),
       ventas: ventas.map(x => ({ ...x, precio: num(x.precio), total: num(x.total) })),
@@ -518,7 +637,7 @@ async function guardarEstadoCompleto(c, E, db) {
     // DELETE (no TRUNCATE): TRUNCATE hace commit implícito en MySQL/InnoDB, lo que
     // rompería la atomicidad de la transacción — un error a mitad de esta función
     // dejaría las tablas ya "truncadas" vacías para siempre, sin poder revertir.
-    for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','clientes','proveedores','categorias'])
+    for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','proveedores','categorias'])
       await c.query(`DELETE FROM ${t} WHERE empresa_id=?`, [E]);
 
     if (db.config) {
@@ -535,9 +654,6 @@ async function guardarEstadoCompleto(c, E, db) {
       await c.query('INSERT INTO categorias (empresa_id,id,nombre,descripcion,estado) VALUES (?,?,?,?,?)', [E, x.id, x.nombre, x.descripcion || '', x.estado || 'activo']);
     for (const x of db.proveedores || [])
       await c.query('INSERT INTO proveedores (empresa_id,id,nombre,telefono,correo,empresa,direccion,whatsapp,estado) VALUES (?,?,?,?,?,?,?,?,?)', [E, x.id, x.nombre, x.telefono || '', x.correo || '', x.empresa || '', x.direccion || '', x.whatsapp || '', x.estado || 'activo']);
-    for (const x of db.clientes || [])
-      await c.query('INSERT INTO clientes (empresa_id,id,nombre,telefono,correo,direccion,whatsapp,pin,registrado) VALUES (?,?,?,?,?,?,?,?,?)',
-        [E, x.id, x.nombre, x.telefono || '', x.correo || '', x.direccion || '', x.whatsapp || '', isHashed(x.pin) ? x.pin : hashPassword(String(x.pin || '0000')), x.registrado ? 1 : 0]);
     for (const x of db.productos || [])
       await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_min,imagen,estado,destacado,marca,tipo_piel) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         [E, x.id, x.codigo || '', x.nombre, x.categoria_id || null, x.descripcion || '', num(x.precio_compra), num(x.precio_venta), num(x.stock), num(x.stock_min), x.imagen || '', x.estado || 'activo', x.destacado ? 1 : 0, x.marca || '', JSON.stringify(x.tipoPiel || [])]);
@@ -561,93 +677,10 @@ async function guardarEstadoCompleto(c, E, db) {
   }
 }
 
-/* ───────── GUARDAR ESTADO (cliente) ─────────
-   Un cliente sólo puede: crear/ampliar/cancelar SUS PROPIOS pedidos (mientras
-   sigan 'pendiente'), enviar mensajes en el chat de esos pedidos (como
-   'cliente', nunca suplantando a 'admin') y marcar como leídos los mensajes
-   que le contestaron. Todo lo demás del payload (productos, precios,
-   categorías, proveedores, compras, ventas, movimientos, config, otros
-   clientes u otros pedidos) se ignora por completo: nunca se toca esa tabla. */
-async function guardarEstadoCliente(c, E, refId, db) {
-  // ── Pedidos propios ── (todo acotado a la empresa E del cliente)
-  const pedidosEnviados = (db.pedidos || []).filter(p => p && p.cliente_id === refId && p.id != null);
-  const idsEnviados = pedidosEnviados.map(p => p.id);
-  const [existentesRows] = idsEnviados.length
-    ? await c.query('SELECT id, cliente_id, estado FROM pedidos WHERE empresa_id=? AND id IN (?)', [E, idsEnviados])
-    : [[]];
-  const existentePorId = new Map(existentesRows.map(p => [p.id, p]));
-
-  for (const p of pedidosEnviados) {
-    const existente = existentePorId.get(p.id);
-    if (existente && existente.cliente_id !== refId) continue;   // id ya usado por otro cliente: ignorar
-    if (existente && existente.estado !== 'pendiente') continue; // ya no editable (aprobado/entregado/cancelado)
-
-    const items = arr(p.items);
-    const productoIds = [...new Set(items.map(it => it && it.producto_id).filter(Boolean))];
-    const [prodRows] = productoIds.length
-      ? await c.query('SELECT id, precio_venta FROM productos WHERE empresa_id=? AND id IN (?)', [E, productoIds])
-      : [[]];
-    const precios = new Map(prodRows.map(pr => [pr.id, num(pr.precio_venta)]));
-
-    const itemsCalc = items
-      .filter(it => it && precios.has(it.producto_id) && num(it.cantidad) > 0)
-      .map(it => {
-        const precio = precios.get(it.producto_id);
-        const cantidad = num(it.cantidad);
-        return { producto_id: it.producto_id, cantidad, precio, subtotal: +(precio * cantidad).toFixed(2) };
-      });
-    const total = +itemsCalc.reduce((s, i) => s + i.subtotal, 0).toFixed(2);
-    const nota = String(p.nota || '').slice(0, 500);
-    const estado = p.estado === 'cancelado' ? 'cancelado' : 'pendiente'; // el cliente no puede fijar 'aprobado'/'entregado'
-    const comprobante = String(p.comprobante || '');
-    const metodoPago = String(p.metodoPago || '');
-
-    if (!existente) {
-      const fecha = new Date().toISOString().slice(0, 10);
-      await c.query('INSERT INTO pedidos (empresa_id,id,cliente_id,total,nota,fecha,estado,metodo_pago,comprobante) VALUES (?,?,?,?,?,?,?,?,?)',
-        [E, p.id, refId, total, nota, fecha, estado, metodoPago, comprobante]);
-    } else {
-      await c.query('UPDATE pedidos SET total=?,nota=?,estado=?,metodo_pago=?,comprobante=? WHERE empresa_id=? AND id=? AND cliente_id=?',
-        [total, nota, estado, metodoPago, comprobante, E, p.id, refId]);
-      await c.query('DELETE FROM pedido_items WHERE empresa_id=? AND pedido_id=?', [E, p.id]);
-    }
-    for (const it of itemsCalc)
-      await c.query('INSERT INTO pedido_items (empresa_id,pedido_id,producto_id,cantidad,precio,subtotal) VALUES (?,?,?,?,?,?)',
-        [E, p.id, it.producto_id, it.cantidad, it.precio, it.subtotal]);
-  }
-
-  // ── Mensajes de chat, sólo dentro de pedidos propios ──
-  const [pedRows] = await c.query('SELECT id FROM pedidos WHERE empresa_id=? AND cliente_id=?', [E, refId]);
-  const misPedidoIds = new Set(pedRows.map(r => r.id));
-  const [msgRows] = misPedidoIds.size
-    ? await c.query('SELECT id, autor FROM mensajes WHERE empresa_id=? AND pedido_id IN (?)', [E, [...misPedidoIds]])
-    : [[]];
-  const msgExistente = new Map(msgRows.map(m => [m.id, m]));
-
-  for (const m of db.mensajes || []) {
-    if (!m || m.id == null || !misPedidoIds.has(m.pedido_id)) continue; // mensaje fuera de sus pedidos: ignorar
-    const existente = msgExistente.get(m.id);
-    if (!existente) {
-      // Mensaje nuevo: siempre se crea a nombre de 'cliente', nunca suplantando al admin
-      await c.query('INSERT INTO mensajes (empresa_id,id,pedido_id,autor,texto,fecha,leido) VALUES (?,?,?,?,?,?,?)',
-        [E, m.id, m.pedido_id, 'cliente', String(m.texto || '').slice(0, 2000), dtMysql(new Date().toISOString()), 0]);
-    } else if (existente.autor !== 'cliente') {
-      // Mensaje del admin: sólo se permite marcarlo como leído
-      await c.query('UPDATE mensajes SET leido=? WHERE empresa_id=? AND id=?', [m.leido ? 1 : 0, E, m.id]);
-    }
-    // Mensaje propio ya existente: no editable, se ignora
-  }
-
-  // ── Secuencias: sólo avanzan (nunca retroceden) y sólo para pedido/mensaje ──
-  const [[meta]] = await c.query('SELECT seq FROM app_meta WHERE empresa_id=?', [E]);
-  const seqActual = (meta && meta.seq) || {};
-  const seqEnviado = (db.seq && typeof db.seq === 'object') ? db.seq : {};
-  const seqNuevo = { ...seqActual };
-  for (const k of ['pedido', 'mensaje']) seqNuevo[k] = Math.max(num(seqActual[k]), num(seqEnviado[k]));
-  await c.query('INSERT INTO app_meta (empresa_id,seq) VALUES (?,?) ON DUPLICATE KEY UPDATE seq=VALUES(seq)', [E, JSON.stringify(seqNuevo)]);
-}
-
 app.put('/api/state', requireAuth, async (req, res) => {
+  if (req.user.role === 'cliente') {
+    return res.status(403).json({ error: 'Los clientes ya no usan /api/state; usá /api/marketplace, /api/catalog, /api/pedidos/checkout, /api/mis-pedidos' });
+  }
   const db = req.body || {};
   const pool = getPool();
   const c = await pool.getConnection();
@@ -655,8 +688,7 @@ app.put('/api/state', requireAuth, async (req, res) => {
   if (!E) { c.release(); return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' }); }
   try {
     await c.beginTransaction();
-    if (req.user.role === 'cliente') await guardarEstadoCliente(c, E, req.user.ref_id, db);
-    else await guardarEstadoCompleto(c, E, db);
+    await guardarEstadoCompleto(c, E, db);
     await c.commit();
     res.json({ ok: true });
   } catch (e) {
@@ -687,14 +719,6 @@ async function asegurarBase() {
     await pool.query('INSERT IGNORE INTO app_meta (empresa_id,seq) VALUES (?,?)',
       [e.id, JSON.stringify({ producto: 0, categoria: 0, proveedor: 0, cliente: 0, compra: 0, venta: 0, movimiento: 0, pedido: 0, mensaje: 0 })]);
   }
-
-  // Migra a bcrypt los PIN de clientes que hayan quedado en texto plano
-  // (bases creadas antes de este cambio). Idempotente: no toca lo ya migrado.
-  const [pendientes] = await pool.query("SELECT empresa_id, id, pin FROM clientes WHERE pin NOT LIKE '$2%'");
-  for (const cl of pendientes) {
-    await pool.query('UPDATE clientes SET pin=? WHERE empresa_id=? AND id=?', [hashPassword(String(cl.pin || '0000')), cl.empresa_id, cl.id]);
-  }
-  if (pendientes.length) console.log(`PIN de ${pendientes.length} cliente(s) migrado(s) a bcrypt.`);
 
   // Limpia solicitudes de registro sin confirmar con más de 24h (nunca fueron empresa).
   try { await pool.query('DELETE FROM registros_pendientes WHERE created_at < (NOW() - INTERVAL 24 HOUR)'); }
