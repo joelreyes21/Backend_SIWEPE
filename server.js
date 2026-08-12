@@ -415,6 +415,41 @@ app.post('/api/pedidos/checkout', requireAuth, requireRole('cliente'), async (re
   } finally { c.release(); }
 });
 
+/* ───────── MIS PEDIDOS (cliente) ─────────
+   Todos los pedidos del cliente logueado, en TODAS las empresas donde
+   compró. No reutiliza mapPedidos(): esa función empareja items por
+   pedido_id, que sólo es único DENTRO de una empresa, así que cruzando
+   empresas mezclaría items de pedidos distintos con el mismo id. */
+app.get('/api/mis-pedidos', requireAuth, requireRole('cliente'), async (req, res) => {
+  try {
+    const pool = getPool();
+    const [peds] = await pool.query(
+      `SELECT pedidos.*, empresas.slug AS emp_slug, empresas.nombre AS emp_nombre,
+              empresas.rubro AS emp_rubro, empresas.ciudad AS emp_ciudad, empresas.logo AS emp_logo
+       FROM pedidos JOIN empresas ON pedidos.empresa_id = empresas.id
+       WHERE pedidos.cliente_id = ?
+       ORDER BY pedidos.fecha DESC, pedidos.id DESC`, [req.user.id]);
+
+    const itemsPorPedido = new Map(); // clave "empresaId:pedidoId" -> items[]
+    for (const p of peds) {
+      const [rows] = await pool.query(
+        'SELECT producto_id,cantidad,precio,subtotal FROM pedido_items WHERE empresa_id=? AND pedido_id=?', [p.empresa_id, p.id]);
+      itemsPorPedido.set(`${p.empresa_id}:${p.id}`, rows.map(i => ({
+        producto_id: i.producto_id, cantidad: num(i.cantidad), precio: num(i.precio), subtotal: num(i.subtotal),
+      })));
+    }
+
+    res.json({
+      pedidos: peds.map(p => ({
+        id: p.id, cliente_id: p.cliente_id, total: num(p.total), nota: p.nota || '', fecha: p.fecha,
+        estado: p.estado, metodoPago: p.metodo_pago || '', comprobante: p.comprobante || '',
+        items: itemsPorPedido.get(`${p.empresa_id}:${p.id}`) || [],
+        empresa: { id: p.empresa_id, slug: p.emp_slug, nombre: p.emp_nombre, rubro: p.emp_rubro || '', ciudad: p.emp_ciudad || '', logo: p.emp_logo || '' },
+      })),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Crear (o actualizar) un usuario del sistema — solo un admin puede hacerlo
 app.post('/api/users', requireAuth, requireRole('admin'), async (req, res) => {
   try {
