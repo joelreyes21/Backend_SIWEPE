@@ -160,16 +160,22 @@ CREATE TABLE IF NOT EXISTS ventas (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS movimientos (
-  empresa_id  INT NOT NULL,
-  id          INT NOT NULL,
-  tipo        VARCHAR(12) NOT NULL,   -- entrada | salida | ajuste
-  signo       VARCHAR(1),             -- para ajustes: + o -
-  producto_id INT,
-  cantidad    INT NOT NULL,
-  fecha       DATE NOT NULL,
-  usuario     VARCHAR(80),
-  obs         VARCHAR(255),
-  PRIMARY KEY (empresa_id, id)
+  empresa_id     INT NOT NULL,
+  id             INT NOT NULL,
+  tipo           VARCHAR(12) NOT NULL,   -- entrada | salida | ajuste
+  signo          VARCHAR(1),             -- para ajustes: + o -
+  producto_id    INT,
+  cantidad       INT NOT NULL,
+  stock_anterior INT,                    -- stock antes del movimiento (autoridad del backend)
+  stock_nuevo    INT,                    -- stock después del movimiento
+  motivo         VARCHAR(60),            -- Compra | Venta | Merma | Daño | Robo | Corrección | ...
+  fecha          DATE NOT NULL,
+  usuario        VARCHAR(80),
+  usuario_id     INT,                    -- id del usuario que lo registró
+  obs            VARCHAR(255),
+  created_at     TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (empresa_id, id),
+  KEY idx_mov_prod (empresa_id, producto_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS pedidos (

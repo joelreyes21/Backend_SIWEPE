@@ -87,6 +87,21 @@ async function _migrarClienteGlobal(pool) {
   }
 }
 
+/* Añade a `movimientos` las columnas de inventario autoritativo (stock antes/
+   después, motivo, usuario_id, created_at) si la tabla es de una versión previa.
+   Idempotente: chequea antes de alterar. */
+async function _migrarInventario(pool) {
+  const [c] = await pool.query("SHOW COLUMNS FROM movimientos LIKE 'stock_nuevo'");
+  if (!c.length) {
+    await pool.query(
+      "ALTER TABLE movimientos " +
+      "ADD COLUMN stock_anterior INT NULL, ADD COLUMN stock_nuevo INT NULL, " +
+      "ADD COLUMN motivo VARCHAR(60) NULL, ADD COLUMN usuario_id INT NULL, " +
+      "ADD COLUMN created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP");
+    console.log('movimientos: columnas de inventario agregadas (stock_anterior/nuevo, motivo, usuario_id).');
+  }
+}
+
 async function initDb(reintentos = 6) {
   let ultimoError;
   for (let i = 1; i <= reintentos; i++) {
@@ -102,6 +117,7 @@ async function initDb(reintentos = 6) {
       // CREATE TABLE IF NOT EXISTS no altera tablas ya existentes, así que si la base
       // trae la forma vieja (mono-empresa) hay que adaptarla.
       await _migrarMultiEmpresa(pool, schema);
+      await _migrarInventario(pool);
       await _migrarClienteGlobal(pool);
       // Migración para bases creadas antes de que `pin` pasara a guardar un hash bcrypt
       // (CREATE TABLE IF NOT EXISTS no amplía columnas en tablas que ya existían).

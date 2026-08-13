@@ -377,6 +377,74 @@ app.put('/api/mi-cuenta/password', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/* ───────── INVENTARIO (admin/proveedor) — LA AUTORIDAD ES EL BACKEND ─────────
+   Registra un movimiento de stock (entrada | salida | ajuste) de forma segura:
+   valida el producto contra la empresa del TOKEN (no del body), calcula el stock
+   en el servidor dentro de una transacción, NUNCA deja el stock por debajo de
+   cero, y guarda el movimiento con stock antes/después + el usuario de la sesión.
+   Opcionalmente registra también la compra (entrada) o la venta (salida). */
+app.post('/api/inventario/movimiento', requireAuth, requireRole('admin', 'proveedor'), async (req, res) => {
+  const E = req.user.empresa_id;
+  if (!E) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
+  const b = req.body || {};
+  const tipo = String(b.tipo || '').toLowerCase();
+  if (!['entrada', 'salida', 'ajuste'].includes(tipo)) return res.status(400).json({ error: 'Tipo de movimiento inválido' });
+  const producto_id = +b.producto_id;
+  const cantidad = Math.trunc(+b.cantidad);
+  if (!producto_id) return res.status(400).json({ error: 'Elegí un producto' });
+  if (!Number.isFinite(cantidad) || cantidad <= 0) return res.status(400).json({ error: 'La cantidad debe ser un número mayor que cero' });
+  const signo = tipo === 'ajuste' ? (b.signo === '+' ? '+' : '-') : null;
+  const delta = tipo === 'entrada' ? cantidad : tipo === 'salida' ? -cantidad : (signo === '+' ? cantidad : -cantidad);
+  const fecha = /^\d{4}-\d{2}-\d{2}$/.test(b.fecha || '') ? b.fecha : new Date().toISOString().slice(0, 10);
+  const motivo = String(b.motivo || (tipo === 'entrada' ? 'Compra' : tipo === 'salida' ? 'Venta' : 'Ajuste')).slice(0, 60);
+  const observacion = String(b.observacion || '').slice(0, 255);
+
+  const pool = getPool();
+  const c = await pool.getConnection();
+  try {
+    await c.beginTransaction();
+    const [[meta]] = await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE', [E]);
+    const [[prod]] = await c.query('SELECT id,nombre,stock FROM productos WHERE empresa_id=? AND id=?', [E, producto_id]);
+    if (!prod) { await c.rollback(); return res.status(404).json({ error: 'Ese producto no existe en tu empresa' }); }
+    const stockAnterior = num(prod.stock);
+    const stockNuevo = stockAnterior + delta;
+    if (stockNuevo < 0) { await c.rollback(); return res.status(400).json({ error: `No hay suficiente stock disponible. Stock actual: ${stockAnterior}.` }); }
+
+    await c.query('UPDATE productos SET stock=? WHERE empresa_id=? AND id=?', [stockNuevo, E, producto_id]);
+
+    const seq = (meta && meta.seq) || {};
+    const nextId = async (clave, tabla) => {
+      const [[mx]] = await c.query(`SELECT COALESCE(MAX(id),0) AS m FROM ${tabla} WHERE empresa_id=?`, [E]);
+      const nid = Math.max(num(seq[clave]), num(mx.m)) + 1; seq[clave] = nid; return nid;
+    };
+
+    const movId = await nextId('movimiento', 'movimientos');
+    await c.query(
+      'INSERT INTO movimientos (empresa_id,id,tipo,signo,producto_id,cantidad,stock_anterior,stock_nuevo,motivo,fecha,usuario,usuario_id,obs) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [E, movId, tipo, signo, producto_id, cantidad, stockAnterior, stockNuevo, motivo, fecha, req.user.nombre || 'Usuario', req.user.id, observacion]);
+
+    // Registro contable opcional, dentro de la MISMA transacción
+    if (tipo === 'entrada' && b.proveedor_id) {
+      const compraId = await nextId('compra', 'compras');
+      await c.query('INSERT INTO compras (empresa_id,id,producto_id,proveedor_id,cantidad,precio,fecha,obs) VALUES (?,?,?,?,?,?,?,?)',
+        [E, compraId, producto_id, +b.proveedor_id || null, cantidad, num(b.precio), fecha, observacion]);
+    }
+    if (tipo === 'salida' && b.cliente_id) {
+      const ventaId = await nextId('venta', 'ventas');
+      const precio = num(b.precio); const total = +(precio * cantidad).toFixed(2);
+      await c.query('INSERT INTO ventas (empresa_id,id,producto_id,cliente_id,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?,?)',
+        [E, ventaId, producto_id, +b.cliente_id || null, cantidad, precio, fecha, total]);
+    }
+
+    await c.query('UPDATE app_meta SET seq=? WHERE empresa_id=?', [JSON.stringify(seq), E]);
+    await c.commit();
+    res.json({ ok: true, producto: { id: producto_id, nombre: prod.nombre, stock: stockNuevo }, stock_anterior: stockAnterior, stock_nuevo: stockNuevo, movimiento_id: movId });
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally { c.release(); }
+});
+
 /* ───────── CHECKOUT (cliente) ─────────
    El carrito puede tener productos de varias empresas. Se agrupa por
    empresa_id y se crea UN pedido por empresa, todo dentro de una sola
@@ -652,7 +720,7 @@ app.get('/api/state', requireAuth, async (req, res) => {
        WHERE pedidos.empresa_id = ? AND users.role = 'cliente'`, [empresaId]);
     const [compras] = await pool.query('SELECT * FROM compras WHERE empresa_id=?', [empresaId]);
     const [ventas] = await pool.query('SELECT * FROM ventas WHERE empresa_id=?', [empresaId]);
-    const [movimientos] = await pool.query('SELECT id,tipo,signo,producto_id,cantidad,fecha,usuario,obs FROM movimientos WHERE empresa_id=?', [empresaId]);
+    const [movimientos] = await pool.query('SELECT id,tipo,signo,producto_id,cantidad,stock_anterior,stock_nuevo,motivo,fecha,usuario,usuario_id,obs FROM movimientos WHERE empresa_id=?', [empresaId]);
     const [peds] = await pool.query('SELECT * FROM pedidos WHERE empresa_id=?', [empresaId]);
     const [items] = await pool.query('SELECT * FROM pedido_items WHERE empresa_id=?', [empresaId]);
     const [mensajes] = await pool.query('SELECT id,pedido_id,autor,texto,fecha,leido FROM mensajes WHERE empresa_id=?', [empresaId]);
@@ -707,7 +775,10 @@ async function guardarEstadoCompleto(c, E, db) {
     for (const x of db.ventas || [])
       await c.query('INSERT INTO ventas (empresa_id,id,producto_id,cliente_id,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?,?)', [E, x.id, x.producto_id || null, x.cliente_id || null, num(x.cantidad), num(x.precio), x.fecha, num(x.total)]);
     for (const x of db.movimientos || [])
-      await c.query('INSERT INTO movimientos (empresa_id,id,tipo,signo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?,?,?,?,?,?,?,?)', [E, x.id, x.tipo, x.signo || null, x.producto_id || null, num(x.cantidad), x.fecha, x.usuario || '', x.obs || '']);
+      await c.query('INSERT INTO movimientos (empresa_id,id,tipo,signo,producto_id,cantidad,stock_anterior,stock_nuevo,motivo,fecha,usuario,usuario_id,obs) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [E, x.id, x.tipo, x.signo || null, x.producto_id || null, num(x.cantidad),
+         x.stock_anterior == null ? null : num(x.stock_anterior), x.stock_nuevo == null ? null : num(x.stock_nuevo),
+         x.motivo || null, x.fecha, x.usuario || '', x.usuario_id || null, x.obs || '']);
     for (const p of db.pedidos || []) {
       await c.query('INSERT INTO pedidos (empresa_id,id,cliente_id,total,nota,fecha,estado,metodo_pago,comprobante) VALUES (?,?,?,?,?,?,?,?,?)', [E, p.id, p.cliente_id || null, num(p.total), p.nota || '', p.fecha, p.estado || 'pendiente', p.metodoPago || '', p.comprobante || '']);
       for (const it of p.items || [])
