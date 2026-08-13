@@ -332,6 +332,51 @@ app.put('/api/clientes/mi', requireAuth, requireRole('cliente'), async (req, res
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/* ───────── MI CUENTA (cualquier usuario logueado) ─────────
+   Ver y editar la propia cuenta (nombre, correo) y cambiar la contraseña.
+   Sirve para admin, proveedor y cliente por igual (todos son filas de `users`). */
+app.get('/api/mi-cuenta', requireAuth, async (req, res) => {
+  try {
+    const [[u]] = await getPool().query(
+      'SELECT id,nombre,email,role,empresa_id,telefono,direccion,whatsapp FROM users WHERE id=?', [req.user.id]);
+    if (!u) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    res.json(u);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/mi-cuenta', requireAuth, async (req, res) => {
+  const { nombre, correo, telefono, direccion, whatsapp } = req.body || {};
+  if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre' });
+  const email = (correo != null && String(correo).trim() !== '') ? String(correo).toLowerCase().trim() : null;
+  const tel = telefono != null ? String(telefono) : null;   // COALESCE: null = no tocar
+  const dir = direccion != null ? String(direccion) : null;
+  const wa  = whatsapp != null ? String(whatsapp) : null;
+  try {
+    const pool = getPool();
+    if (email) {
+      const [dup] = await pool.query('SELECT id FROM users WHERE email=? AND id<>? LIMIT 1', [email, req.user.id]);
+      if (dup.length) return res.status(409).json({ error: 'Ese correo ya está en uso' });
+    }
+    await pool.query(
+      'UPDATE users SET nombre=?, email=COALESCE(?,email), telefono=COALESCE(?,telefono), direccion=COALESCE(?,direccion), whatsapp=COALESCE(?,whatsapp) WHERE id=?',
+      [String(nombre).trim(), email, tel, dir, wa, req.user.id]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/mi-cuenta/password', requireAuth, async (req, res) => {
+  const { actual, nueva } = req.body || {};
+  if (!actual || !nueva) return res.status(400).json({ error: 'Faltan datos' });
+  if (String(nueva).length < 8) return res.status(400).json({ error: 'La nueva contraseña debe tener al menos 8 caracteres' });
+  try {
+    const pool = getPool();
+    const [[u]] = await pool.query('SELECT password_hash FROM users WHERE id=?', [req.user.id]);
+    if (!u || !checkPassword(String(actual), u.password_hash)) return res.status(401).json({ error: 'La contraseña actual no es correcta' });
+    await pool.query('UPDATE users SET password_hash=? WHERE id=?', [hashPassword(String(nueva)), req.user.id]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 /* ───────── CHECKOUT (cliente) ─────────
    El carrito puede tener productos de varias empresas. Se agrupa por
    empresa_id y se crea UN pedido por empresa, todo dentro de una sola
