@@ -349,7 +349,7 @@ app.get('/api/empresas/verificar/:token', async (req, res) => {
     const [rows] = await pool.query(
       'SELECT * FROM registros_pendientes WHERE token=? AND created_at > (NOW() - INTERVAL 24 HOUR) LIMIT 1',
       [req.params.token]);
-    if (!rows.length) return res.redirect(`${SITE_URL}/pages/index.html?verify=invalido`);
+    if (!rows.length) return res.redirect(`${SITE_URL}/index.html?verify=invalido`);
     const r = rows[0];
 
     await c.beginTransaction();
@@ -358,7 +358,7 @@ app.get('/api/empresas/verificar/:token', async (req, res) => {
     if (dupU.length) {
       await c.rollback();
       await pool.query('DELETE FROM registros_pendientes WHERE token=?', [req.params.token]);
-      return res.redirect(`${SITE_URL}/pages/index.html?verify=invalido`);
+      return res.redirect(`${SITE_URL}/index.html?verify=invalido`);
     }
     // slug único
     let base = slugify(r.nombre), slug = base, n = 1;
@@ -387,7 +387,7 @@ app.get('/api/empresas/verificar/:token', async (req, res) => {
   } catch (e) {
     await c.rollback().catch(() => {});
     console.error(e);
-    res.redirect(`${SITE_URL}/pages/index.html?verify=error`);
+    res.redirect(`${SITE_URL}/index.html?verify=error`);
   } finally { c.release(); }
 });
 

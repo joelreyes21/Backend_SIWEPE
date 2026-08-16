@@ -8,6 +8,8 @@ const raiz = path.resolve(__dirname, '..');
 const front = path.resolve(raiz, '..', 'SIWEPEE-main');
 const pages = path.join(front, 'pages');
 const leer = p => fs.readFileSync(p, 'utf8');
+// index.html volvió a vivir en la raíz de SIWEPEE-main; el resto de páginas se quedó en pages/.
+const carpetaDe = nombre => nombre === 'index.html' ? front : pages;
 
 test('la validación de imágenes rechaza SVG y esquemas ejecutables', () => {
   assert.equal(imagenWebValida('https://cdn.example.com/producto.webp'), true);
@@ -54,7 +56,7 @@ test('la tienda usa autenticación global y checkout dedicado', () => {
 
 test('todas las páginas principales cargan la identidad institucional', () => {
   for (const nombre of ['index.html','descubrir.html','terminos.html','tienda.html','admin.html']) {
-    const html = leer(path.join(pages, nombre));
+    const html = leer(path.join(carpetaDe(nombre), nombre));
     assert.match(html, /siwepe-mark\.png/, nombre);
     assert.match(html, /platform\.css/, nombre);
   }
@@ -126,7 +128,7 @@ test('la agenda manual de clientes queda aislada por empresa y no crea cuentas g
 test('el logo SIWEPE de la tienda vuelve al marketplace sin ejecutar cierre de sesión', () => {
   const tiendaHtml = leer(path.join(pages, 'tienda.html'));
   const tienda = leer(path.join(front, 'assets', 'js', 'tienda', 'main.js'));
-  assert.match(tiendaHtml, /class="t-siwepe-home" href="index\.html"/);
+  assert.match(tiendaHtml, /class="t-siwepe-home" href="\.\.\/index\.html"/);
   assert.match(tiendaHtml, /aria-label="Ir al inicio de SIWEPE"/);
   assert.doesNotMatch(tiendaHtml, /t-siwepe-home[^>]+onclick="salirTienda/);
   assert.match(tienda, /if\(page==='galeria'\)\s+renderGaleriaTienda/);
@@ -173,7 +175,7 @@ test('carrito, checkout, confirmación y gestión de pedidos forman un flujo com
 test('el registro de empresa guía por tipo, categoría y descripción persistente', () => {
   const schema = leer(path.join(raiz, 'schema.sql'));
   const server = leer(path.join(raiz, 'server.js'));
-  const index = leer(path.join(pages, 'index.html'));
+  const index = leer(path.join(front, 'index.html'));
   const admin = leer(path.join(front, 'assets', 'js', 'admin', 'main.js'));
   assert.match(schema, /tipos_negocio\s+JSON/i);
   assert.match(server, /normalizarTiposNegocio/);
@@ -229,7 +231,7 @@ test('la activación de empresa abre el panel con un código de sesión de un so
 test('el onboarding limita las categorías a dos y conserva una principal compatible', () => {
   const schema=leer(path.join(raiz,'schema.sql'));
   const server=leer(path.join(raiz,'server.js'));
-  const index=leer(path.join(pages, 'index.html'));
+  const index=leer(path.join(front, 'index.html'));
   assert.match(schema, /rubros\s+JSON/i);
   assert.match(server, /rubros\.length>2/);
   assert.match(index, /Máximo 2 categorías/);
@@ -259,7 +261,7 @@ test('el acceso administrativo y el footer empresarial usan identidad y contacto
 test('el login administrativo no revive una versión anterior desde caché o historial', () => {
   const adminHtml=leer(path.join(pages, 'admin.html'));
   const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
-  const index=leer(path.join(pages, 'index.html'));
+  const index=leer(path.join(front, 'index.html'));
   assert.match(adminHtml,/Cache-Control[^>]*no-cache, no-store/i);
   assert.match(adminHtml,/addEventListener\('pageshow'/);
   assert.match(adminHtml,/ev\.persisted/);
@@ -339,7 +341,7 @@ test('la navegación del panel queda vinculada antes de cualquier retorno del lo
 });
 
 test('la portada renovada ofrece categorías, footer completo y países ampliados', () => {
-  const index=leer(path.join(pages, 'index.html'));
+  const index=leer(path.join(front, 'index.html'));
   assert.match(index,/class="home-category-grid"/);
   assert.match(index,/class="mega-footer footer"/);
   assert.match(index,/Ropa y calzado/);
@@ -351,7 +353,7 @@ test('la portada renovada ofrece categorías, footer completo y países ampliado
 
 test('los scripts inline de las páginas tienen sintaxis válida', () => {
   for (const nombre of ['index.html','descubrir.html','terminos.html','tienda.html','admin.html','perfil.html','carrito.html','checkout.html']) {
-    const html = leer(path.join(pages, nombre));
+    const html = leer(path.join(carpetaDe(nombre), nombre));
     const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
     for (const codigo of scripts) assert.doesNotThrow(() => new Function(codigo), `${nombre}: script inline inválido`);
   }
@@ -359,10 +361,10 @@ test('los scripts inline de las páginas tienen sintaxis válida', () => {
 
 test('los recursos locales referenciados por las páginas existen', () => {
   for (const nombre of ['index.html','descubrir.html','terminos.html','tienda.html','admin.html','perfil.html','carrito.html','checkout.html']) {
-    const html = leer(path.join(pages, nombre));
+    const html = leer(path.join(carpetaDe(nombre), nombre));
     const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/gi)].map(m => m[1])
       .filter(x => !x.includes('${') && !/^(?:https?:|data:|mailto:|#|javascript:)/i.test(x))
       .map(x => x.split(/[?#]/)[0]).filter(Boolean);
-    for (const ref of refs) assert.equal(fs.existsSync(path.resolve(pages, ref)), true, `${nombre}: falta ${ref}`);
+    for (const ref of refs) assert.equal(fs.existsSync(path.resolve(carpetaDe(nombre), ref)), true, `${nombre}: falta ${ref}`);
   }
 });
