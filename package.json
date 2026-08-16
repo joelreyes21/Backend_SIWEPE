@@ -1,19 +1,23 @@
 {
   "name": "siwepe-server",
   "version": "1.0.0",
-  "description": "Backend Node.js + MySQL para Belle Stock / Miscelaneasaly",
+  "description": "API multiempresa de SIWEPE con Node.js y MySQL",
   "type": "commonjs",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "reset": "node reset.js"
+    "reset": "node reset.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check auth.js && node --check db.js && node --test"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.6.2",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.11.5",
     "resend": "^4.8.0"

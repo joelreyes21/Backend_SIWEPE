@@ -1,52 +1,35 @@
-/*! SIWEPE · © 2026 Joel Reyes. Todos los derechos reservados. · Prohibida su reproduccion o distribucion sin autorizacion. */
-/* reset.js — deja la base de datos VACÍA (sin datos de ejemplo).
-   Ejecuta:  npm run reset
-   Borra productos, categorías, clientes, proveedores, compras, ventas,
-   movimientos, pedidos y mensajes. Conserva la configuración del negocio
-   y deja al menos un usuario admin para poder entrar. */
+/*! SIWEPE · reinicio seguro de una sola empresa */
 require('dotenv').config();
 const { initDb, getPool } = require('./db');
-const { hashPassword } = require('./auth');
 
+const arg = process.argv.find(x => x.startsWith('--empresa='));
+const empresaRef = arg ? arg.slice('--empresa='.length).trim() : '';
+const confirmacion = String(process.env.RESET_CONFIRM || '');
 const seqCero = { producto:0, categoria:0, proveedor:0, cliente:0, compra:0, venta:0, movimiento:0, pedido:0, mensaje:0 };
 
 async function run() {
+  if (!empresaRef) throw new Error('Indica una empresa: npm run reset -- --empresa=mi-slug');
+  if (confirmacion !== `BORRAR:${empresaRef}`) {
+    throw new Error(`Define RESET_CONFIRM=BORRAR:${empresaRef} para confirmar. No se borró nada.`);
+  }
   await initDb();
   const pool = getPool();
   const c = await pool.getConnection();
   try {
-    await c.query('SET FOREIGN_KEY_CHECKS = 0');
-    for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','clientes','proveedores','categorias']) {
-      await c.query(`TRUNCATE TABLE ${t}`);
+    const campo = /^\d+$/.test(empresaRef) ? 'id' : 'slug';
+    const [[empresa]] = await c.query(`SELECT id,nombre,slug FROM empresas WHERE ${campo}=? LIMIT 1`, [campo === 'id' ? Number(empresaRef) : empresaRef]);
+    if (!empresa) throw new Error('Empresa no encontrada. No se borró nada.');
+    await c.beginTransaction();
+    for (const tabla of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','proveedores','categorias']) {
+      await c.query(`DELETE FROM ${tabla} WHERE empresa_id=?`, [empresa.id]);
     }
-    await c.query('SET FOREIGN_KEY_CHECKS = 1');
-
-    // Reiniciar los contadores de id a cero
-    const [meta] = await c.query('SELECT id FROM app_meta WHERE id=1');
-    if (meta.length) await c.query('UPDATE app_meta SET seq=? WHERE id=1', [JSON.stringify(seqCero)]);
-    else await c.query('INSERT INTO app_meta (id,seq) VALUES (1,?)', [JSON.stringify(seqCero)]);
-
-    // Asegurar la fila de configuración (sin pisar la tuya si ya existe)
-    const [cfg] = await c.query('SELECT id FROM config WHERE id=1');
-    if (!cfg.length) {
-      await c.query('INSERT INTO config (id,nombre,logo,moneda,tema,pin_admin,banners,pago) VALUES (1,?,?,?,?,?,?,?)',
-        ['SIWEPE', '', 'L', 'cielo', '1234', JSON.stringify([]), JSON.stringify({ banco:'', cuenta:'', titular:'', tipo:'', nota:'' })]);
-    }
-
-    // Asegurar que exista un admin para poder entrar
-    const [admins] = await c.query("SELECT id FROM users WHERE role='admin' AND activo=1");
-    if (!admins.length) {
-      await c.query('INSERT INTO users (nombre,email,password_hash,role,activo) VALUES (?,?,?,?,1)',
-        ['Administrador', 'admin@siwepe.com', hashPassword('admin1234'), 'admin']);
-      console.log('   (No había admin: creé admin@siwepe.com / admin1234)');
-    }
-
-    console.log('Base de datos vacía. Ahora todo lo que agregues viene de la base.');
-    console.log('   Entra al admin y empieza a crear tus categorías y productos.');
-  } finally {
-    c.release();
-    process.exit(0);
-  }
+    await c.query('UPDATE app_meta SET seq=?,version=version+1 WHERE empresa_id=?', [JSON.stringify(seqCero), empresa.id]);
+    await c.commit();
+    console.log(`Empresa reiniciada: ${empresa.nombre} (${empresa.slug}). Se conservaron usuarios, clientes globales y configuración.`);
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    throw e;
+  } finally { c.release(); }
 }
 
-run().catch(err => { console.error('Error al limpiar la base:', err.message); process.exit(1); });
+run().then(() => process.exit(0)).catch(err => { console.error('Reset cancelado:', err.message); process.exit(1); });

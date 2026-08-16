@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 
 const SECRET = process.env.JWT_SECRET || 'dev_secret_cambia_esto';
 if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') throw new Error('JWT_SECRET es obligatorio en producción');
   console.warn('AVISO: JWT_SECRET no está definido — usando un valor de desarrollo INSEGURO. Defínelo en tu .env / variables de entorno antes de ir a producción.');
 }
 
@@ -15,7 +16,10 @@ const checkPassword = (plain, hash) => bcrypt.compareSync(plain, hash || '');
 // front-end reenvía tal cual al guardar el estado completo).
 const isHashed = (s) => typeof s === 'string' && /^\$2[aby]\$\d{2}\$/.test(s);
 
-const signToken = (payload) => jwt.sign(payload, SECRET, { expiresIn: '3650d' }); // ~10 años: la sesión no se cierra
+// Antes ~10 años (sesión prácticamente eterna): si un token se filtra queda
+// válido para siempre. 30 días balancea "no pedir login todo el tiempo" con
+// acotar cuánto dura expuesta una sesión robada.
+const signToken = (payload) => jwt.sign(payload, SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 
 function verifyToken(token) {
   try { return jwt.verify(token, SECRET); }
@@ -23,13 +27,23 @@ function verifyToken(token) {
 }
 
 /* Middleware: exige un token válido. Deja el usuario en req.user */
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
-  const user = token && verifyToken(token);
-  if (!user) return res.status(401).json({ error: 'No autorizado' });
-  req.user = user;
-  next();
+  const payload = token && verifyToken(token);
+  if (!payload) return res.status(401).json({ error: 'No autorizado' });
+  try {
+    // Revalidar la cuenta en cada petición invalida tokens de usuarios
+    // desactivados o cuyo rol/empresa cambió después de emitir el JWT.
+    const { getPool } = require('./db');
+    const [[actual]] = await getPool().query(
+      'SELECT id,nombre,role,empresa_id,ref_id,activo FROM users WHERE id=? LIMIT 1', [payload.id]);
+    if (!actual || !actual.activo) return res.status(401).json({ error: 'Sesión no válida' });
+    req.user = { id: actual.id, nombre: actual.nombre, role: actual.role, empresa_id: actual.empresa_id, ref_id: actual.ref_id };
+    next();
+  } catch (e) {
+    next(e);
+  }
 }
 
 /* Middleware: exige uno de los roles indicados */

@@ -17,15 +17,20 @@ CREATE TABLE IF NOT EXISTS empresas (
   id           INT AUTO_INCREMENT PRIMARY KEY,
   slug         VARCHAR(90) UNIQUE,
   nombre       VARCHAR(120) NOT NULL,
+  tipos_negocio JSON,
   rubro        VARCHAR(60),
+  rubros       JSON,
   descripcion  VARCHAR(255),
   telefono     VARCHAR(40),
   ciudad       VARCHAR(80),
   pais         VARCHAR(60),
   logo         LONGTEXT,
   correo       VARCHAR(120),
+  contacto_publico VARCHAR(120),
+  correo_publico VARCHAR(120),
   estado       VARCHAR(16) NOT NULL DEFAULT 'pendiente',  -- pendiente | activa
   verify_token VARCHAR(80),
+  visitas      INT NOT NULL DEFAULT 0,  -- veces que se abrió su tienda pública (GET /api/catalog) — para "destacadas"
   created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -36,7 +41,9 @@ CREATE TABLE IF NOT EXISTS empresas (
 CREATE TABLE IF NOT EXISTS registros_pendientes (
   token         VARCHAR(80) PRIMARY KEY,
   nombre        VARCHAR(120) NOT NULL,
+  tipos_negocio JSON,
   rubro         VARCHAR(60),
+  rubros        JSON,
   descripcion   VARCHAR(255),
   telefono      VARCHAR(40),
   ciudad        VARCHAR(80),
@@ -58,6 +65,17 @@ CREATE TABLE IF NOT EXISTS password_resets (
   KEY idx_pwreset_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Código de un solo uso que entrega la sesión administrativa después de
+-- confirmar el correo. Nunca se coloca el JWT real dentro de una URL.
+CREATE TABLE IF NOT EXISTS onboarding_sessions (
+  code       VARCHAR(80) PRIMARY KEY,
+  user_id    INT NOT NULL,
+  expires_at DATETIME NOT NULL,
+  used_at    DATETIME,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_onboarding_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Configuración del negocio: UNA fila por empresa
 CREATE TABLE IF NOT EXISTS config (
   empresa_id INT          NOT NULL,
@@ -67,6 +85,7 @@ CREATE TABLE IF NOT EXISTS config (
   tema       VARCHAR(20)  NOT NULL DEFAULT 'cielo',
   pin_admin  VARCHAR(12)  NOT NULL DEFAULT '1234',
   banners    JSON,
+  galeria    JSON,
   pago       JSON,
   PRIMARY KEY (empresa_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -74,10 +93,12 @@ CREATE TABLE IF NOT EXISTS config (
 -- Secuencias de id que usa el front-end (nuevoId): una fila por empresa
 CREATE TABLE IF NOT EXISTS app_meta (
   empresa_id INT PRIMARY KEY,
-  seq        JSON
+  seq        JSON,
+  version    INT NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Usuarios del sistema: admin/proveedor/cliente, todos por email+clave.
+-- Usuarios del sistema: una sola identidad por correo. Un admin conserva su
+-- rol, pero también puede comprar y administrar sus datos de entrega.
 -- El cliente es una cuenta GLOBAL (empresa_id=NULL), no ligada a una tienda.
 CREATE TABLE IF NOT EXISTS users (
   id            INT AUTO_INCREMENT PRIMARY KEY,
@@ -87,9 +108,10 @@ CREATE TABLE IF NOT EXISTS users (
   role          ENUM('admin','proveedor','cliente') NOT NULL DEFAULT 'cliente',
   empresa_id    INT,                       -- empresa a la que pertenece (NULL = admin de plataforma o cliente global)
   ref_id        INT,                       -- id de proveedor asociado (si aplica)
-  telefono      VARCHAR(30),                -- solo se usa cuando role='cliente'
-  direccion     VARCHAR(160),               -- solo se usa cuando role='cliente'
-  whatsapp      VARCHAR(24),                -- solo se usa cuando role='cliente'
+  telefono      VARCHAR(30),                -- datos personales y de entrega
+  direccion     VARCHAR(160),               -- dirección principal de compra
+  direcciones   JSON,                       -- libreta de direcciones del cliente global
+  whatsapp      VARCHAR(24),                -- contacto para compras
   activo        TINYINT NOT NULL DEFAULT 1,
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -112,8 +134,24 @@ CREATE TABLE IF NOT EXISTS proveedores (
   empresa    VARCHAR(80),
   direccion  VARCHAR(160),
   whatsapp   VARCHAR(24),
+  origen     VARCHAR(20) NOT NULL DEFAULT 'registrado', -- registrado | no_registrado
   estado     VARCHAR(12) NOT NULL DEFAULT 'activo',
   PRIMARY KEY (empresa_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Agenda propia del emprendimiento. Estos registros NO crean una cuenta
+-- SIWEPE ni una contraseña para el cliente; sirven para ventas y seguimiento
+-- manual del negocio sin mezclar identidades globales.
+CREATE TABLE IF NOT EXISTS clientes_empresa (
+  id          INT AUTO_INCREMENT PRIMARY KEY,
+  empresa_id  INT NOT NULL,
+  nombre      VARCHAR(120) NOT NULL,
+  telefono    VARCHAR(30),
+  correo      VARCHAR(120),
+  whatsapp    VARCHAR(24),
+  direccion   VARCHAR(180),
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_cliente_empresa (empresa_id, nombre)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS productos (
@@ -125,11 +163,14 @@ CREATE TABLE IF NOT EXISTS productos (
   descripcion   TEXT,
   precio_compra DECIMAL(12,2) NOT NULL DEFAULT 0,
   precio_venta  DECIMAL(12,2) NOT NULL DEFAULT 0,
-  stock         INT NOT NULL DEFAULT 0,
+  stock         INT NOT NULL DEFAULT 0,       -- unidades publicadas en tienda
+  stock_inventario INT NOT NULL DEFAULT 0,    -- unidades guardadas en almacén
   stock_min     INT NOT NULL DEFAULT 0,
   imagen        LONGTEXT,
+  imagenes      JSON,
   estado        VARCHAR(12) NOT NULL DEFAULT 'activo',
   destacado     TINYINT NOT NULL DEFAULT 0,
+  publicado_alguna_vez TINYINT NOT NULL DEFAULT 0,
   marca         VARCHAR(80),
   tipo_piel     JSON,
   PRIMARY KEY (empresa_id, id)
@@ -148,34 +189,36 @@ CREATE TABLE IF NOT EXISTS compras (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS ventas (
-  empresa_id  INT NOT NULL,
-  id          INT NOT NULL,
-  producto_id INT,
-  cliente_id  INT,
+  empresa_id        INT NOT NULL,
+  id                INT NOT NULL,
+  producto_id       INT,
+  cliente_id        INT,          -- ya no se usa desde el front (venta directa = cliente sin cuenta); se deja por compatibilidad
+  cliente_nombre     VARCHAR(120), -- venta directa/mostrador: nombre escrito a mano, no una cuenta SIWEPE
+  cliente_identidad  VARCHAR(40),  -- opcional
+  pedido_id          INT,          -- pedido de origen (NULL = venta directa)
+  estado             VARCHAR(12) NOT NULL DEFAULT 'activa', -- activa | anulada
+  origen_stock       VARCHAR(24) NOT NULL DEFAULT 'tienda', -- tienda | inventario | mixto
+  stock_tienda_usado INT NOT NULL DEFAULT 0,
+  stock_inventario_usado INT NOT NULL DEFAULT 0,
   cantidad    INT NOT NULL,
   precio      DECIMAL(12,2) NOT NULL,
   fecha       DATE NOT NULL,
   total       DECIMAL(12,2) NOT NULL,
-  PRIMARY KEY (empresa_id, id)
+  PRIMARY KEY (empresa_id, id),
+  KEY idx_venta_pedido (empresa_id, pedido_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS movimientos (
-  empresa_id     INT NOT NULL,
-  id             INT NOT NULL,
-  tipo           VARCHAR(12) NOT NULL,   -- entrada | salida | ajuste
-  signo          VARCHAR(1),             -- para ajustes: + o -
-  producto_id    INT,
-  cantidad       INT NOT NULL,
-  stock_anterior INT,                    -- stock antes del movimiento (autoridad del backend)
-  stock_nuevo    INT,                    -- stock después del movimiento
-  motivo         VARCHAR(60),            -- Compra | Venta | Merma | Daño | Robo | Corrección | ...
-  fecha          DATE NOT NULL,
-  usuario        VARCHAR(80),
-  usuario_id     INT,                    -- id del usuario que lo registró
-  obs            VARCHAR(255),
-  created_at     TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (empresa_id, id),
-  KEY idx_mov_prod (empresa_id, producto_id)
+  empresa_id  INT NOT NULL,
+  id          INT NOT NULL,
+  tipo        VARCHAR(12) NOT NULL,   -- entrada | salida | ajuste
+  signo       VARCHAR(1),             -- para ajustes: + o -
+  producto_id INT,
+  cantidad    INT NOT NULL,
+  fecha       DATE NOT NULL,
+  usuario     VARCHAR(80),
+  obs         VARCHAR(255),
+  PRIMARY KEY (empresa_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS pedidos (
@@ -187,7 +230,12 @@ CREATE TABLE IF NOT EXISTS pedidos (
   fecha       DATE NOT NULL,
   estado      VARCHAR(16) NOT NULL DEFAULT 'pendiente',
   metodo_pago VARCHAR(20),
+  pago_estado VARCHAR(24) NOT NULL DEFAULT 'pendiente',
+  pago_referencia VARCHAR(80),
   comprobante LONGTEXT,
+  destinatario VARCHAR(120),
+  telefono_entrega VARCHAR(30),
+  direccion_entrega VARCHAR(240),
   PRIMARY KEY (empresa_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -213,3 +261,20 @@ CREATE TABLE IF NOT EXISTS mensajes (
   PRIMARY KEY (empresa_id, id),
   KEY idx_msg_ped (empresa_id, pedido_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+--  VISTAS DE SOLO LECTURA — separan `users` visualmente por rol
+--  para que no se vea todo mezclado en un cliente de MySQL.
+--  IMPORTANTE: `users` sigue siendo la única tabla real (login,
+--  checkout, sesión y "una cuenta por correo" dependen de eso).
+--  Estas vistas son solo para mirar los datos más ordenados;
+--  nunca escribas en ellas ni las trates como tablas separadas.
+--  Nunca incluyen password_hash.
+-- ============================================================
+CREATE OR REPLACE VIEW v_administradores AS
+  SELECT id, nombre, email, role, empresa_id, ref_id, activo, created_at
+  FROM users WHERE role IN ('admin','proveedor');
+
+CREATE OR REPLACE VIEW v_clientes AS
+  SELECT id, nombre, email, telefono, direccion, whatsapp, activo, created_at
+  FROM users WHERE role='cliente';
