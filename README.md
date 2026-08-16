@@ -12,9 +12,28 @@ npm install
 npm start
 ```
 
-El API queda en `http://localhost:3000`. El frontend es un proyecto separado: servilo desde `SIWEPEE-main` en `http://localhost:5500`, uno de los orígenes permitidos por defecto.
+El API queda en `http://localhost:3000`. El frontend es un proyecto separado (`../SIWEPEE-main`, estático, sin servidor propio) que en producción siempre habla con el backend de Railway — si lo abrís localmente con algún servidor estático genérico (Live Server, `npx serve`, etc.), agregá ese origen a `CORS_ORIGINS` (por defecto ya incluye `http://localhost:5500` y `http://127.0.0.1:5500`).
 
 Antes de desplegar, configura como mínimo una contraseña MySQL real, un `JWT_SECRET` largo y único, `CORS_ORIGINS`, `SITE_URL` y las credenciales de correo. El servidor no crea usuarios con contraseñas conocidas. Una empresa y su cuenta administradora se crean mediante el registro verificado; para preparar manualmente una instalación vacía se pueden usar `BOOTSTRAP_ADMIN_EMAIL` y `BOOTSTRAP_ADMIN_PASSWORD`.
+
+## Despliegue en Railway
+
+El código ya está preparado para Railway: `db.js` detecta solo las variables `MYSQL*`/`DATABASE_URL` que Railway inyecta automáticamente al conectar un plugin de MySQL — no hay que tocar código, solo configurar variables en el dashboard del servicio.
+
+1. **Servicio del backend**: conectá el repo de GitHub (`joelreyes21/Backend_SIWEPE`) como servicio en Railway. Railway detecta `package.json` y corre `npm start` solo.
+2. **Base de datos**: agregá el plugin de MySQL de Railway al mismo proyecto. Railway inyecta `MYSQLHOST`, `MYSQLPORT`, `MYSQLUSER`, `MYSQLPASSWORD`, `MYSQLDATABASE` (o `DATABASE_URL`) automáticamente — `db.js` los usa sin configuración extra.
+3. **Variables que hay que agregar a mano** en el servicio del backend (pestaña *Variables*):
+
+   | Variable | Valor |
+   |---|---|
+   | `JWT_SECRET` | una frase larga y única — nunca la del `.env.example` |
+   | `CORS_ORIGINS` | el/los dominios reales del frontend, separados por coma |
+   | `SITE_URL` | la URL pública del frontend (a donde redirige tras verificar correo o resetear contraseña) |
+   | `PUBLIC_API_URL` | la URL pública que Railway le da a este servicio (para armar el link de verificación de correo) |
+   | `RESEND_API_KEY` | opcional — sin esto, el link de verificación solo queda en los logs, no se manda correo real |
+   | `MAIL_FROM` | opcional, remitente de los correos |
+
+4. Después de desplegar, confirmá que `assets/js/shared/data.js` (`API_BASE`, en `SIWEPEE-main`) apunte a la URL pública que Railway le asignó a este servicio — si Railway genera una URL nueva, ese es el único lugar del frontend que hay que actualizar.
 
 ## Comandos
 
