@@ -187,6 +187,42 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || `http://localhost:${PORT}`;
 const SITE_URL = process.env.SITE_URL || 'https://siwepe.shop';
 const slugify = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'empresa';
+
+/* ───────── Validación de nombres y teléfonos (la autoridad es el backend) ─────────
+   Nombre: debe tener letras; máximo 4 números y máximo 3 signos (evita basura
+   como "56838383" o "-·-·-·-"). Teléfono: solo dígitos, cantidad correcta según
+   el país; en Honduras exige celular (8 dígitos que empiecen con 3, 7, 8 o 9,
+   sin atarse a operadora por la portabilidad). */
+function validarNombreNegocio(nombre, etiqueta) {
+  const et = etiqueta || 'nombre';
+  const n = String(nombre || '').trim().replace(/\s+/g, ' ');
+  if (n.length < 2) return { ok: false, error: `El ${et} es muy corto.` };
+  const letras = (n.match(/[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/g) || []).length;
+  if (letras < 2) return { ok: false, error: `El ${et} debe tener letras, no solo números o símbolos.` };
+  if ((n.match(/[0-9]/g) || []).length > 4) return { ok: false, error: `El ${et} no puede tener más de 4 números.` };
+  if ((n.match(/[^0-9a-zA-ZáéíóúüñÁÉÍÓÚÜÑ\s]/g) || []).length > 3) return { ok: false, error: `El ${et} no puede tener más de 3 signos.` };
+  return { ok: true, valor: n };
+}
+const TEL_PAISES = {
+  'Honduras': { code: '504', len: 8, movil: /^[3789]/ },
+  'Guatemala': { code: '502', len: 8 }, 'El Salvador': { code: '503', len: 8 },
+  'Nicaragua': { code: '505', len: 8 }, 'Costa Rica': { code: '506', len: 8 },
+  'Panamá': { code: '507', len: 8 }, 'Panama': { code: '507', len: 8 },
+  'México': { code: '52', len: 10 }, 'Mexico': { code: '52', len: 10 },
+  'Colombia': { code: '57', len: 10 }, 'Estados Unidos': { code: '1', len: 10 },
+  'España': { code: '34', len: 9 }, 'Espana': { code: '34', len: 9 }
+};
+function validarTelefono(raw, pais, etiqueta) {
+  const et = etiqueta || 'teléfono';
+  const solo = String(raw || '').replace(/\D/g, '');
+  if (!solo) return { ok: true, valor: '' };  // opcional: si no lo ponen, se permite
+  const info = TEL_PAISES[pais] || TEL_PAISES['Honduras'];  // default: Honduras (plataforma hondureña)
+  let local = solo;
+  if (info.code && local.length > info.len && local.startsWith(info.code)) local = local.slice(info.code.length);
+  if (local.length !== info.len) return { ok: false, error: `El ${et} debe tener ${info.len} dígitos${pais ? ' en ' + pais : ''}.` };
+  if (info.movil && !info.movil.test(local)) return { ok: false, error: `Ingresá un ${et} de celular válido (debe empezar con 3, 7, 8 o 9).` };
+  return { ok: true, valor: local };
+}
 function webBaseSeguro(valor) {
   try {
     const u=new URL(String(valor||''));
@@ -264,6 +300,9 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
   const { nombre, tiposNegocio, rubro, rubros, descripcion, telefono, ciudad, pais, logo, dueno, correo, password } = req.body || {};
   if (!nombre || !dueno || !correo || !password) return res.status(400).json({ error: 'Faltan datos obligatorios' });
   if (String(password).length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+  { const vN = validarNombreNegocio(nombre, 'nombre del negocio'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vD = validarNombreNegocio(dueno, 'nombre del dueño'); if (!vD.ok) return res.status(400).json({ error: vD.error }); }
+  { const vT = validarTelefono(telefono, pais, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   const email = String(correo).toLowerCase().trim();
   if (esCorreoDesechable(email)) return res.status(400).json({ error: 'Usá un correo real, no uno temporal — lo vas a necesitar para administrar tu tienda.' });
   const pool = getPool();
@@ -469,6 +508,9 @@ app.post('/api/auth/register', limitarIntentos(4, 10 * 60 * 1000), async (req, r
   if (!nombre || !String(nombre).trim() || !correo || !password || String(password).length < 8) {
     return res.status(400).json({ error: 'Nombre, correo y contraseña (mín. 8 caracteres) obligatorios' });
   }
+  { const vN = validarNombreNegocio(nombre, 'nombre'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vT = validarTelefono(telefono, null, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
+  { const vW = validarTelefono(whatsapp, null, 'WhatsApp'); if (!vW.ok) return res.status(400).json({ error: vW.error }); }
   const email = String(correo).toLowerCase().trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Correo electrónico inválido' });
   if (esCorreoDesechable(email)) return res.status(400).json({ error: 'Usá un correo real, no uno temporal — lo vas a necesitar para recuperar tu cuenta.' });
@@ -515,6 +557,8 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
   if (!empresaId) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
   const { nombre, tiposNegocio, rubro, rubros, descripcion, telefono, ciudad, pais, logo, contactoPublico, correoPublico } = req.body || {};
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre del negocio' });
+  { const vN = validarNombreNegocio(nombre, 'nombre del negocio'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vT = validarTelefono(telefono, pais, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   try {
     exigirImagenWeb(logo, 'Logo');
     const tipos = Array.isArray(tiposNegocio) ? normalizarTiposNegocio(tiposNegocio) : null;
@@ -719,6 +763,9 @@ app.post('/api/ventas/directas', requireAuth, requireRole('admin'), async(req,re
 app.put('/api/clientes/mi', requireAuth, requireRole('cliente','admin'), async (req, res) => {
   const { nombre, telefono, correo, direccion, whatsapp } = req.body || {};
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre' });
+  { const vN = validarNombreNegocio(nombre, 'nombre'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vT = validarTelefono(telefono, null, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
+  { const vW = validarTelefono(whatsapp, null, 'WhatsApp'); if (!vW.ok) return res.status(400).json({ error: vW.error }); }
   const email = correo ? String(correo).toLowerCase().trim() : null;
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Correo electrónico inválido' });
   try {
