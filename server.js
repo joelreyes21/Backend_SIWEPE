@@ -93,6 +93,14 @@ function normalizarDirecciones(v) {
     principal: !!(d && d.principal),
   }));
   if (limpias.some(d => !d.direccion)) { const e = new Error('Cada dirección debe incluir la dirección exacta'); e.status = 400; throw e; }
+  for (const d of limpias) {
+    const vD = validarDireccion(d.direccion, 'dirección');
+    if (!vD.ok) { const e = new Error(vD.error); e.status = 400; throw e; }
+    d.direccion = vD.valor.slice(0, 160);
+    const vT = validarTelefono(d.telefono, null, 'teléfono');
+    if (!vT.ok) { const e = new Error(vT.error); e.status = 400; throw e; }
+    d.telefono = vT.valor;
+  }
   let principal = limpias.findIndex(d => d.principal);
   if (limpias.length && principal < 0) principal = 0;
   limpias.forEach((d, i) => { d.principal = i === principal; });
@@ -223,6 +231,37 @@ function validarTelefono(raw, pais, etiqueta) {
   if (info.movil && !info.movil.test(local)) return { ok: false, error: `Ingresá un ${et} de celular válido (debe empezar con 3, 7, 8 o 9).` };
   return { ok: true, valor: local };
 }
+/* Nombre de PERSONA (dueño / cliente): solo letras, espacios y los signos
+   propios de un nombre (guion y apóstrofo, p. ej. "José-María", "O'Brien").
+   NO permite números ni caracteres especiales. Para nombres de NEGOCIO o
+   PRODUCTO usá validarNombreNegocio (esos sí pueden llevar números, p. ej.
+   "Café 24/7"). */
+function validarNombrePersona(nombre, etiqueta) {
+  const et = etiqueta || 'nombre';
+  const n = String(nombre || '').trim().replace(/\s+/g, ' ');
+  if (n.length < 2) return { ok: false, error: `El ${et} es muy corto.` };
+  if (n.length > 60) return { ok: false, error: `El ${et} es demasiado largo.` };
+  if (/[0-9]/.test(n)) return { ok: false, error: `El ${et} no puede tener números.` };
+  if (!/^[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ'’\- ]+$/.test(n)) return { ok: false, error: `El ${et} solo puede tener letras (sin caracteres especiales).` };
+  const letras = (n.match(/[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/g) || []).length;
+  if (letras < 2) return { ok: false, error: `Escribí un ${et} válido.` };
+  return { ok: true, valor: n };
+}
+/* Dirección: valida FORMATO razonable (tiene letras, largo mínimo, sin
+   caracteres raros tipo emojis o <>{}[]|). Permite números y la puntuación
+   típica de direcciones ( . , # - / ° º ª ( ) ). OJO: verificar que la
+   dirección EXISTA de verdad requiere una API de mapas/geocoding (servicio
+   externo); esto solo garantiza que no sea basura. Vacío se permite. */
+function validarDireccion(raw, etiqueta) {
+  const et = etiqueta || 'dirección';
+  const d = String(raw || '').trim().replace(/\s+/g, ' ');
+  if (!d) return { ok: true, valor: '' };
+  if (d.length < 5) return { ok: false, error: `La ${et} es muy corta, escribila completa.` };
+  const letras = (d.match(/[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/g) || []).length;
+  if (letras < 3) return { ok: false, error: `La ${et} debe incluir el nombre de la calle o barrio, no solo números o símbolos.` };
+  if (!/^[0-9a-zA-ZáéíóúüñÁÉÍÓÚÜÑ .,#/°ºª()'’\-]+$/.test(d)) return { ok: false, error: `La ${et} tiene caracteres no permitidos. Usá solo letras, números y . , # - /` };
+  return { ok: true, valor: d };
+}
 function webBaseSeguro(valor) {
   try {
     const u=new URL(String(valor||''));
@@ -301,7 +340,7 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
   if (!nombre || !dueno || !correo || !password) return res.status(400).json({ error: 'Faltan datos obligatorios' });
   if (String(password).length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
   { const vN = validarNombreNegocio(nombre, 'nombre del negocio'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
-  { const vD = validarNombreNegocio(dueno, 'nombre del dueño'); if (!vD.ok) return res.status(400).json({ error: vD.error }); }
+  { const vD = validarNombrePersona(dueno, 'nombre del dueño'); if (!vD.ok) return res.status(400).json({ error: vD.error }); }
   { const vT = validarTelefono(telefono, pais, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   const email = String(correo).toLowerCase().trim();
   if (esCorreoDesechable(email)) return res.status(400).json({ error: 'Usá un correo real, no uno temporal — lo vas a necesitar para administrar tu tienda.' });
@@ -508,7 +547,7 @@ app.post('/api/auth/register', limitarIntentos(4, 10 * 60 * 1000), async (req, r
   if (!nombre || !String(nombre).trim() || !correo || !password || String(password).length < 8) {
     return res.status(400).json({ error: 'Nombre, correo y contraseña (mín. 8 caracteres) obligatorios' });
   }
-  { const vN = validarNombreNegocio(nombre, 'nombre'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vN = validarNombrePersona(nombre, 'nombre'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
   { const vT = validarTelefono(telefono, null, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   { const vW = validarTelefono(whatsapp, null, 'WhatsApp'); if (!vW.ok) return res.status(400).json({ error: vW.error }); }
   const email = String(correo).toLowerCase().trim();
@@ -581,12 +620,16 @@ function datosClienteManual(body) {
   const correo=String(body && body.correo || '').trim().toLowerCase().slice(0,120);
   if (!nombre) { const e=new Error('Escribe el nombre del cliente'); e.status=400; throw e; }
   if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) { const e=new Error('El correo no es válido'); e.status=400; throw e; }
+  { const vN=validarNombrePersona(nombre,'nombre del cliente'); if(!vN.ok){ const e=new Error(vN.error); e.status=400; throw e; } }
+  const vT=validarTelefono(body && body.telefono, null, 'teléfono'); if(!vT.ok){ const e=new Error(vT.error); e.status=400; throw e; }
+  const vW=validarTelefono(body && body.whatsapp, null, 'WhatsApp'); if(!vW.ok){ const e=new Error(vW.error); e.status=400; throw e; }
+  const vD=validarDireccion(body && body.direccion, 'dirección'); if(!vD.ok){ const e=new Error(vD.error); e.status=400; throw e; }
   return {
     nombre,
-    telefono:String(body && body.telefono || '').trim().slice(0,30),
+    telefono:vT.valor,
     correo,
-    whatsapp:String(body && body.whatsapp || '').replace(/\D/g,'').slice(0,24),
-    direccion:String(body && body.direccion || '').trim().slice(0,180)
+    whatsapp:vW.valor,
+    direccion:vD.valor.slice(0,180)
   };
 }
 
@@ -763,7 +806,7 @@ app.post('/api/ventas/directas', requireAuth, requireRole('admin'), async(req,re
 app.put('/api/clientes/mi', requireAuth, requireRole('cliente','admin'), async (req, res) => {
   const { nombre, telefono, correo, direccion, whatsapp } = req.body || {};
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre' });
-  { const vN = validarNombreNegocio(nombre, 'nombre'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vN = validarNombrePersona(nombre, 'nombre'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
   { const vT = validarTelefono(telefono, null, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   { const vW = validarTelefono(whatsapp, null, 'WhatsApp'); if (!vW.ok) return res.status(400).json({ error: vW.error }); }
   const email = correo ? String(correo).toLowerCase().trim() : null;
@@ -864,6 +907,8 @@ app.post('/api/pedidos/checkout', limitarIntentos(20, 10 * 60 * 1000), requireAu
       await c.rollback();
       return res.status(400).json({ error: 'Completa el nombre, teléfono y dirección de entrega' });
     }
+    { const vT = validarTelefono(telefonoEntrega, null, 'teléfono de entrega'); if (!vT.ok) { await c.rollback(); return res.status(400).json({ error: vT.error }); } }
+    { const vD = validarDireccion(direccionEntrega, 'dirección de entrega'); if (!vD.ok) { await c.rollback(); return res.status(400).json({ error: vD.error }); } }
     const pagoEstado = metodoPago === 'transferencia' ? 'en_revision' : 'pendiente_pasarela';
     const pagoReferencia = metodoPago === 'tarjeta'
       ? `${String(detallePago.marca || 'Tarjeta').slice(0,24)} •••• ${String(detallePago.ultimos4 || '').replace(/\D/g,'').slice(-4)}`
@@ -1335,6 +1380,7 @@ async function guardarEstadoCompleto(c, E, db) {
     if (!num(p.id) || !String(p.nombre || '').trim() || [p.precio_compra,p.precio_venta,p.stock,p.stock_inventario,p.stock_min].some(v => num(v) < 0)) {
       const e = new Error('Hay un producto con nombre, identificador o valores numéricos inválidos'); e.status = 400; throw e;
     }
+    { const vP = validarNombreNegocio(p.nombre, 'nombre del producto'); if (!vP.ok) { const e = new Error(vP.error); e.status = 400; throw e; } }
     if (!['activo','inactivo'].includes(p.estado || 'activo')) { const e = new Error('Estado de producto inválido'); e.status = 400; throw e; }
     exigirImagenWeb(p.imagen, 'Imagen del producto');
     const imagenes=arr(p.imagenes);
@@ -1381,8 +1427,12 @@ async function guardarEstadoCompleto(c, E, db) {
 
     for (const x of db.categorias || [])
       await c.query('INSERT INTO categorias (empresa_id,id,nombre,descripcion,estado) VALUES (?,?,?,?,?)', [E, x.id, String(x.nombre||'').slice(0,80), String(x.descripcion||'').slice(0,255), x.estado || 'activo']);
-    for (const x of db.proveedores || [])
+    for (const x of db.proveedores || []) {
+      { const vT = validarTelefono(x.telefono, null, 'teléfono del proveedor'); if (!vT.ok) { const e = new Error(vT.error); e.status = 400; throw e; } }
+      { const vW = validarTelefono(x.whatsapp, null, 'WhatsApp del proveedor'); if (!vW.ok) { const e = new Error(vW.error); e.status = 400; throw e; } }
+      { const vD = validarDireccion(x.direccion, 'dirección del proveedor'); if (!vD.ok) { const e = new Error(vD.error); e.status = 400; throw e; } }
       await c.query('INSERT INTO proveedores (empresa_id,id,nombre,telefono,correo,empresa,direccion,whatsapp,origen,estado) VALUES (?,?,?,?,?,?,?,?,?,?)', [E, x.id, String(x.nombre||'').slice(0,80), String(x.telefono||'').slice(0,30), String(x.correo||'').slice(0,120), String(x.empresa||'').slice(0,80), String(x.direccion||'').slice(0,160), String(x.whatsapp||'').slice(0,24), x.origen==='no_registrado'?'no_registrado':'registrado', x.estado || 'activo']);
+    }
     for (const x of db.productos || []) {
       const imagenes=arr(x.imagenes).filter(Boolean).slice(0,6);
       const portada=x.imagen||imagenes[0]||'';
