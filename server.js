@@ -693,10 +693,20 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
     const categorias = Array.isArray(rubros) ? normalizarRubros(rubros,rubro) : null;
     const emailPublico = String(correoPublico || '').toLowerCase().trim();
     if (emailPublico && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailPublico)) return res.status(400).json({ error: 'El correo público no es válido' });
-    await getPool().query(
-      'UPDATE empresas SET nombre=?, tipos_negocio=COALESCE(?,tipos_negocio), rubro=?, rubros=COALESCE(?,rubros), descripcion=?, telefono=?, ciudad=?, pais=?, logo=?, contacto_publico=?, correo_publico=? WHERE id=?',
-      [String(nombre).trim().slice(0,120), tipos ? JSON.stringify(tipos) : null, categorias?categorias[0]:(rubro||''), categorias?JSON.stringify(categorias):null, String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logo || '', String(contactoPublico || '').trim().slice(0,120), emailPublico.slice(0,120), empresaId]);
-    res.json({ ok: true });
+    const pool = getPool();
+    // Regenera el slug (el apodo de la URL, ?e=...) a partir del nombre nuevo,
+    // para que el enlace de la tienda refleje el nombre actual. Se mantiene
+    // único entre empresas, excluyendo la propia.
+    let base = slugify(nombre), nuevoSlug = base, n = 1;
+    for (;;) {
+      const [ex] = await pool.query('SELECT id FROM empresas WHERE slug=? AND id<>? LIMIT 1', [nuevoSlug, empresaId]);
+      if (!ex.length) break;
+      nuevoSlug = base + '-' + (++n);
+    }
+    await pool.query(
+      'UPDATE empresas SET nombre=?, slug=?, tipos_negocio=COALESCE(?,tipos_negocio), rubro=?, rubros=COALESCE(?,rubros), descripcion=?, telefono=?, ciudad=?, pais=?, logo=?, contacto_publico=?, correo_publico=? WHERE id=?',
+      [String(nombre).trim().slice(0,120), nuevoSlug, tipos ? JSON.stringify(tipos) : null, categorias?categorias[0]:(rubro||''), categorias?JSON.stringify(categorias):null, String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logo || '', String(contactoPublico || '').trim().slice(0,120), emailPublico.slice(0,120), empresaId]);
+    res.json({ ok: true, slug: nuevoSlug });
   } catch (err) { errorPublico(res, err); }
 });
 
