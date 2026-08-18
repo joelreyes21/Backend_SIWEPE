@@ -1481,7 +1481,6 @@ async function guardarEstadoCompleto(c, E, db) {
     if (!num(p.id) || !String(p.nombre || '').trim() || [p.precio_compra,p.precio_venta,p.stock,p.stock_inventario,p.stock_min].some(v => num(v) < 0)) {
       const e = new Error('Hay un producto con nombre, identificador o valores numéricos inválidos'); e.status = 400; throw e;
     }
-    { const vP = validarNombreNegocio(p.nombre, 'nombre del producto'); if (!vP.ok) { const e = new Error(vP.error); e.status = 400; throw e; } }
     if (!['activo','inactivo'].includes(p.estado || 'activo')) { const e = new Error('Estado de producto inválido'); e.status = 400; throw e; }
     exigirImagenWeb(p.imagen, 'Imagen del producto');
     const imagenes=arr(p.imagenes);
@@ -1541,12 +1540,8 @@ async function guardarEstadoCompleto(c, E, db) {
 
     for (const x of db.categorias || [])
       await c.query('INSERT INTO categorias (empresa_id,id,nombre,descripcion,estado) VALUES (?,?,?,?,?)', [E, x.id, String(x.nombre||'').slice(0,80), String(x.descripcion||'').slice(0,255), x.estado || 'activo']);
-    for (const x of db.proveedores || []) {
-      { const vT = validarTelefono(x.telefono, null, 'teléfono del proveedor'); if (!vT.ok) { const e = new Error(vT.error); e.status = 400; throw e; } }
-      { const vW = validarTelefono(x.whatsapp, null, 'WhatsApp del proveedor'); if (!vW.ok) { const e = new Error(vW.error); e.status = 400; throw e; } }
-      { const vD = validarDireccion(x.direccion, 'dirección del proveedor'); if (!vD.ok) { const e = new Error(vD.error); e.status = 400; throw e; } }
+    for (const x of db.proveedores || [])
       await c.query('INSERT INTO proveedores (empresa_id,id,nombre,telefono,correo,empresa,direccion,whatsapp,origen,estado) VALUES (?,?,?,?,?,?,?,?,?,?)', [E, x.id, String(x.nombre||'').slice(0,80), String(x.telefono||'').slice(0,30), String(x.correo||'').slice(0,120), String(x.empresa||'').slice(0,80), String(x.direccion||'').slice(0,160), String(x.whatsapp||'').slice(0,24), x.origen==='no_registrado'?'no_registrado':'registrado', x.estado || 'activo']);
-    }
     for (const x of db.productos || []) {
       const imagenes=arr(x.imagenes).filter(Boolean).slice(0,6);
       const portada=x.imagen||imagenes[0]||'';
