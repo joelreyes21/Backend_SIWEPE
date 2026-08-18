@@ -223,15 +223,15 @@ const TEL_PAISES = {
   'España': { code: '34', len: 9 }, 'Espana': { code: '34', len: 9 }
 };
 function validarTelefono(raw, pais, etiqueta) {
+  // Validación tolerante: solo revisa que sea un número de teléfono plausible
+  // (8 a 15 dígitos, con o sin código de país), sin exigir un formato exacto
+  // de celular hondureño — eso trababa guardados legítimos. Vacío se permite.
   const et = etiqueta || 'teléfono';
   const solo = String(raw || '').replace(/\D/g, '');
-  if (!solo) return { ok: true, valor: '' };  // opcional: si no lo ponen, se permite
-  const info = TEL_PAISES[pais] || TEL_PAISES['Honduras'];  // default: Honduras (plataforma hondureña)
-  let local = solo;
-  if (info.code && local.length > info.len && local.startsWith(info.code)) local = local.slice(info.code.length);
-  if (local.length !== info.len) return { ok: false, error: `El ${et} debe tener ${info.len} dígitos${pais ? ' en ' + pais : ''}.` };
-  if (info.movil && !info.movil.test(local)) return { ok: false, error: `Ingresá un ${et} de celular válido (debe empezar con 3, 7, 8 o 9).` };
-  return { ok: true, valor: local };
+  if (!solo) return { ok: true, valor: '' };
+  if (solo.length < 8) return { ok: false, error: `El ${et} es muy corto (mínimo 8 dígitos).` };
+  if (solo.length > 15) return { ok: false, error: `El ${et} tiene demasiados dígitos.` };
+  return { ok: true, valor: solo };
 }
 /* Nombre de PERSONA (dueño / cliente): solo letras, espacios y los signos
    propios de un nombre (guion y apóstrofo, p. ej. "José-María", "O'Brien").
