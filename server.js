@@ -393,14 +393,50 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
 // Lista pública de empresas activas (para "Descubrir empresas")
 app.get('/api/empresas', async (req, res) => {
   try {
-    const [rows] = await getPool().query("SELECT id,slug,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,contacto_publico,correo_publico,visitas FROM empresas WHERE estado='activa' ORDER BY nombre");
-    res.json(rows.map(({ tipos_negocio, rubros, contacto_publico, correo_publico, ...x }) => ({
+    const [rows] = await getPool().query("SELECT id,slug,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,contacto_publico,correo_publico,visitas,(SELECT ROUND(AVG(estrellas),1) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating,(SELECT COUNT(*) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating_count FROM empresas WHERE estado='activa' ORDER BY nombre");
+    res.json(rows.map(({ tipos_negocio, rubros, contacto_publico, correo_publico, rating_count, ...x }) => ({
       ...x,
       tiposNegocio: arr(tipos_negocio),
       rubros: arr(rubros).length?arr(rubros):[x.rubro].filter(Boolean),
       contactoPublico: contacto_publico || '',
-      correoPublico: correo_publico || ''
+      correoPublico: correo_publico || '',
+      rating: x.rating != null ? Number(x.rating) : null,
+      ratingCount: Number(rating_count) || 0
     })));
+  } catch (e) { errorPublico(res, e); }
+});
+
+/* ═══════════════ CALIFICACIONES DE TIENDA (estrellas) ═══════════════
+   Solo clientes con cuenta pueden calificar, UNA vez por tienda (se puede
+   actualizar). El promedio y el total salen en Descubrir y en la tienda. */
+
+// Devuelve el promedio, el total y MI voto (si el cliente ya calificó).
+app.get('/api/tiendas/:e/mi-calificacion', requireAuth, requireRole('cliente','admin'), async (req, res) => {
+  try {
+    const empresaId = await empresaIdDe(req.params.e);
+    if (!empresaId) return res.status(404).json({ error: 'Tienda no encontrada' });
+    const pool = getPool();
+    const [[agg]] = await pool.query('SELECT ROUND(AVG(estrellas),1) AS promedio, COUNT(*) AS total FROM calificaciones WHERE empresa_id=?', [empresaId]);
+    const [[mio]] = await pool.query('SELECT estrellas FROM calificaciones WHERE empresa_id=? AND user_id=? LIMIT 1', [empresaId, req.user.id]);
+    res.json({ promedio: agg.promedio != null ? Number(agg.promedio) : null, total: Number(agg.total) || 0, miEstrellas: mio ? Number(mio.estrellas) : 0 });
+  } catch (e) { errorPublico(res, e); }
+});
+
+// Crea o actualiza mi calificación (1 a 5). Devuelve el promedio y total nuevos.
+app.post('/api/tiendas/:e/calificar', requireAuth, requireRole('cliente','admin'), async (req, res) => {
+  try {
+    const estrellas = Math.round(Number(req.body && req.body.estrellas));
+    if (!Number.isInteger(estrellas) || estrellas < 1 || estrellas > 5) {
+      return res.status(400).json({ error: 'La calificación debe ser de 1 a 5 estrellas.' });
+    }
+    const empresaId = await empresaIdDe(req.params.e);
+    if (!empresaId) return res.status(404).json({ error: 'Tienda no encontrada' });
+    const pool = getPool();
+    await pool.query(
+      'INSERT INTO calificaciones (empresa_id,user_id,estrellas) VALUES (?,?,?) ON DUPLICATE KEY UPDATE estrellas=VALUES(estrellas)',
+      [empresaId, req.user.id, estrellas]);
+    const [[agg]] = await pool.query('SELECT ROUND(AVG(estrellas),1) AS promedio, COUNT(*) AS total FROM calificaciones WHERE empresa_id=?', [empresaId]);
+    res.json({ ok: true, promedio: agg.promedio != null ? Number(agg.promedio) : null, total: Number(agg.total) || 0, miEstrellas: estrellas });
   } catch (e) { errorPublico(res, e); }
 });
 
@@ -1358,13 +1394,13 @@ app.get('/api/catalog', async (req, res) => {
     // si esto falla): solo alimenta el contador de "tiendas destacadas".
     pool.query('UPDATE empresas SET visitas = visitas + 1 WHERE id=?', [empresaId]).catch(() => {});
     const [cfg] = await pool.query('SELECT * FROM config WHERE empresa_id=?', [empresaId]);
-    const [[empresa]] = await pool.query("SELECT id,slug,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,contacto_publico,correo_publico FROM empresas WHERE id=? AND estado='activa'", [empresaId]);
+    const [[empresa]] = await pool.query("SELECT id,slug,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,contacto_publico,correo_publico,(SELECT ROUND(AVG(estrellas),1) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating,(SELECT COUNT(*) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating_count FROM empresas WHERE id=? AND estado='activa'", [empresaId]);
     const [cats] = await pool.query('SELECT * FROM categorias WHERE empresa_id=?', [empresaId]);
     const [prods] = await pool.query("SELECT * FROM productos WHERE empresa_id=? AND estado='activo'", [empresaId]);
     const c = cfg[0] || {};
     res.json({
       empresa_id: empresaId,
-      empresa: empresa ? { id:empresa.id, slug:empresa.slug, nombre:empresa.nombre, tiposNegocio:arr(empresa.tipos_negocio), rubro:empresa.rubro||'', rubros:arr(empresa.rubros).length?arr(empresa.rubros):[empresa.rubro].filter(Boolean), descripcion:empresa.descripcion||'', telefono:empresa.telefono||'', ciudad:empresa.ciudad||'', pais:empresa.pais||'', logo:empresa.logo||'', contactoPublico:empresa.contacto_publico||'', correoPublico:empresa.correo_publico||'' } : null,
+      empresa: empresa ? { id:empresa.id, slug:empresa.slug, nombre:empresa.nombre, tiposNegocio:arr(empresa.tipos_negocio), rubro:empresa.rubro||'', rubros:arr(empresa.rubros).length?arr(empresa.rubros):[empresa.rubro].filter(Boolean), descripcion:empresa.descripcion||'', telefono:empresa.telefono||'', ciudad:empresa.ciudad||'', pais:empresa.pais||'', logo:empresa.logo||'', contactoPublico:empresa.contacto_publico||'', correoPublico:empresa.correo_publico||'', rating:empresa.rating!=null?Number(empresa.rating):null, ratingCount:Number(empresa.rating_count)||0 } : null,
       config: { nombre: c.nombre, logo: c.logo || '', moneda: c.moneda, tema: c.tema, banners: arr(c.banners), galeria: arr(c.galeria), pago: obj(c.pago) },
       categorias: cats,
       productos: prods.map(r => {

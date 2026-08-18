@@ -263,6 +263,18 @@ CREATE TABLE IF NOT EXISTS mensajes (
   KEY idx_msg_ped (empresa_id, pedido_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Calificaciones de tiendas por clientes: 1 a 5 estrellas, UNA por cliente por
+-- empresa (PK compuesta). Si el cliente vuelve a calificar, se actualiza su voto.
+CREATE TABLE IF NOT EXISTS calificaciones (
+  empresa_id INT NOT NULL,
+  user_id    INT NOT NULL,
+  estrellas  TINYINT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (empresa_id, user_id),
+  KEY idx_calif_empresa (empresa_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 --  VISTAS DE SOLO LECTURA — separan `users` visualmente por rol
 --  para que no se vea todo mezclado en un cliente de MySQL.
