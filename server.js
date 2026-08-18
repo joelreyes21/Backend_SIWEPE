@@ -6,7 +6,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { initDb, getPool } = require('./db');
-const { hashPassword, checkPassword, signToken, requireAuth, requireRole } = require('./auth');
+const { hashPassword, checkPassword, signToken, requireAuth, requireRole, requireSuper } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -482,7 +482,7 @@ app.post('/api/auth/login', limitarIntentos(10, 5 * 60 * 1000), async (req, res)
     if(portal==='admin'&&!['admin','proveedor'].includes(u.role)) return res.status(403).json({error:'Esta cuenta es de cliente y no tiene acceso administrativo.'});
     if(portal==='compras'&&!['cliente','admin'].includes(u.role)) return res.status(403).json({error:'Esta cuenta no tiene acceso al portal de compras.'});
     const token = signToken({ id: u.id, nombre: u.nombre, role: u.role, empresa_id: u.empresa_id, ref_id: u.ref_id });
-    res.json({ token, user: { id: u.id, nombre: u.nombre, role: u.role, empresa_id: u.empresa_id, ref_id: u.ref_id } });
+    res.json({ token, user: { id: u.id, nombre: u.nombre, role: u.role, empresa_id: u.empresa_id, ref_id: u.ref_id, super_admin: !!u.super_admin } });
   } catch (e) { errorPublico(res, e); }
 });
 
@@ -566,6 +566,92 @@ app.post('/api/auth/register', limitarIntentos(4, 10 * 60 * 1000), async (req, r
 });
 
 app.get('/api/me', requireAuth, (req, res) => res.json({ user: req.user }));
+
+/* ══════════════════ SUPER ADMIN DE PLATAFORMA ══════════════════
+   Panel del dueño de SIWEPE. Métricas globales de toda la plataforma y
+   gestión de tiendas (activar / desactivar / eliminar). Todo protegido con
+   requireSuper: solo un usuario con super_admin=1 puede tocar estos datos. */
+
+/* Resumen general: KPIs de toda la plataforma + series para gráficas. */
+app.get('/api/super/overview', requireAuth, requireSuper, async (req, res) => {
+  try {
+    const pool = getPool();
+    const uno = async (sql) => { const [[r]] = await pool.query(sql); return Number(Object.values(r)[0]) || 0; };
+    const [tiendasActivas, tiendasInactivas, pendientes, productos, admins, clientes, pedidos, ventasTotal, visitasTotal] = await Promise.all([
+      uno("SELECT COUNT(*) n FROM empresas WHERE estado='activa'"),
+      uno("SELECT COUNT(*) n FROM empresas WHERE estado<>'activa'"),
+      uno("SELECT COUNT(*) n FROM registros_pendientes"),
+      uno("SELECT COUNT(*) n FROM productos"),
+      uno("SELECT COUNT(*) n FROM users WHERE role IN ('admin','proveedor')"),
+      uno("SELECT COUNT(*) n FROM users WHERE role='cliente'"),
+      uno("SELECT COUNT(*) n FROM pedidos"),
+      uno("SELECT COALESCE(SUM(total),0) n FROM pedidos WHERE estado<>'cancelado'"),
+      uno("SELECT COALESCE(SUM(visitas),0) n FROM empresas"),
+    ]);
+    const [tiendasMes] = await pool.query("SELECT DATE_FORMAT(created_at,'%Y-%m') ym, COUNT(*) n FROM empresas GROUP BY ym ORDER BY ym DESC LIMIT 6");
+    const [pedidosMes] = await pool.query("SELECT DATE_FORMAT(fecha,'%Y-%m') ym, COUNT(*) n, COALESCE(SUM(total),0) monto FROM pedidos GROUP BY ym ORDER BY ym DESC LIMIT 6");
+    const [rubros] = await pool.query("SELECT COALESCE(NULLIF(TRIM(rubro),''),'Otros') rubro, COUNT(*) n FROM empresas WHERE estado='activa' GROUP BY rubro ORDER BY n DESC LIMIT 8");
+    const [topTiendas] = await pool.query("SELECT e.nombre, COALESCE(e.visitas,0) visitas, (SELECT COUNT(*) FROM productos p WHERE p.empresa_id=e.id) productos FROM empresas e WHERE e.estado='activa' ORDER BY visitas DESC, productos DESC LIMIT 6");
+    res.json({
+      kpis: { tiendasActivas, tiendasInactivas, pendientes, productos, admins, clientes, pedidos, ventasTotal, visitasTotal },
+      tiendasMes: tiendasMes.reverse(),
+      pedidosMes: pedidosMes.reverse(),
+      rubros, topTiendas,
+    });
+  } catch (e) { errorPublico(res, e); }
+});
+
+/* Lista TODAS las tiendas (cualquier estado) con su dueño y # de productos. */
+app.get('/api/super/tiendas', requireAuth, requireSuper, async (req, res) => {
+  try {
+    const [rows] = await getPool().query(
+      `SELECT e.id, e.slug, e.nombre, e.rubro, e.ciudad, e.pais, e.estado, COALESCE(e.visitas,0) visitas, e.created_at,
+              (SELECT u.nombre FROM users u WHERE u.empresa_id=e.id AND u.role='admin' ORDER BY u.id LIMIT 1) AS dueno,
+              (SELECT u.email  FROM users u WHERE u.empresa_id=e.id AND u.role='admin' ORDER BY u.id LIMIT 1) AS correo,
+              (SELECT COUNT(*) FROM productos p WHERE p.empresa_id=e.id) AS productos
+       FROM empresas e ORDER BY e.created_at DESC, e.id DESC`);
+    res.json({ tiendas: rows });
+  } catch (e) { errorPublico(res, e); }
+});
+
+/* Activar / desactivar una tienda (borrado suave, reversible). Desactivar la
+   oculta de todo el sitio público sin borrar sus datos. */
+app.patch('/api/super/tiendas/:id/estado', requireAuth, requireSuper, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const estado = String(req.body && req.body.estado || '');
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Tienda inválida' });
+    if (!['activa', 'inactiva'].includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
+    const [r] = await getPool().query('UPDATE empresas SET estado=? WHERE id=?', [estado, id]);
+    if (!r.affectedRows) return res.status(404).json({ error: 'Tienda no encontrada' });
+    res.json({ ok: true, estado });
+  } catch (e) { errorPublico(res, e); }
+});
+
+/* Eliminar una tienda POR COMPLETO: borra la empresa y todos sus datos
+   (productos, pedidos, ventas, config, usuarios admin/proveedor, etc.) dentro
+   de una transacción. Irreversible: para ocultar sin perder datos usá PATCH
+   estado=inactiva. */
+app.delete('/api/super/tiendas/:id', requireAuth, requireSuper, async (req, res) => {
+  const pool = getPool();
+  const c = await pool.getConnection();
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) { c.release(); return res.status(400).json({ error: 'Tienda inválida' }); }
+    await c.beginTransaction();
+    const [[emp]] = await c.query('SELECT id FROM empresas WHERE id=? FOR UPDATE', [id]);
+    if (!emp) { await c.rollback(); c.release(); return res.status(404).json({ error: 'Tienda no encontrada' }); }
+    for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','clientes_empresa','proveedores','categorias','config','app_meta'])
+      await c.query('DELETE FROM `' + t + '` WHERE empresa_id=?', [id]);
+    await c.query("DELETE FROM users WHERE empresa_id=? AND role IN ('admin','proveedor')", [id]);
+    await c.query('DELETE FROM empresas WHERE id=?', [id]);
+    await c.commit();
+    res.json({ ok: true });
+  } catch (e) {
+    try { await c.rollback(); } catch (_) {}
+    errorPublico(res, e);
+  } finally { c.release(); }
+});
 
 /* ───────── PERFIL DE MI EMPRESA ─────────
    nombre/rubro/descripcion/telefono/ciudad/pais/logo viven en `empresas`,

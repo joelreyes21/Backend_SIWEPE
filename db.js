@@ -236,6 +236,14 @@ async function _migrarOrigenProveedores(pool) {
   await pool.query("UPDATE proveedores SET origen='registrado' WHERE origen IS NULL OR origen NOT IN ('registrado','no_registrado')");
 }
 
+/* Añade la columna super_admin a users si falta (bases creadas antes del
+   panel de plataforma). El super administrador (dueño de SIWEPE) se marca
+   con super_admin=1; ver crear-superadmin.js. */
+async function _migrarSuperAdmin(pool) {
+  const [c] = await pool.query("SHOW COLUMNS FROM users LIKE 'super_admin'");
+  if (!c.length) await pool.query("ALTER TABLE users ADD COLUMN super_admin TINYINT NOT NULL DEFAULT 0 AFTER role");
+}
+
 async function initDb(reintentos = 6) {
   let ultimoError;
   for (let i = 1; i <= reintentos; i++) {
@@ -263,6 +271,7 @@ async function initDb(reintentos = 6) {
       await _migrarInventarioEstricto(pool);
       await _migrarOrigenProveedores(pool);
       await _migrarEntregaPedidos(pool);
+      await _migrarSuperAdmin(pool);
       console.log(`MySQL conectado: ${CFG.user}@${CFG.host}:${CFG.port}/${CFG.database}`);
       return pool;
     } catch (e) {

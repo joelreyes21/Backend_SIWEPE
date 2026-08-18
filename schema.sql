@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS users (
   email         VARCHAR(120) UNIQUE,
   password_hash VARCHAR(120) NOT NULL,
   role          ENUM('admin','proveedor','cliente') NOT NULL DEFAULT 'cliente',
+  super_admin   TINYINT NOT NULL DEFAULT 0, -- 1 = super administrador de plataforma (dueño de SIWEPE), ve/controla todo
   empresa_id    INT,                       -- empresa a la que pertenece (NULL = admin de plataforma o cliente global)
   ref_id        INT,                       -- id de proveedor asociado (si aplica)
   telefono      VARCHAR(30),                -- datos personales y de entrega

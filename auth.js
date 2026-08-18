@@ -37,9 +37,9 @@ async function requireAuth(req, res, next) {
     // desactivados o cuyo rol/empresa cambió después de emitir el JWT.
     const { getPool } = require('./db');
     const [[actual]] = await getPool().query(
-      'SELECT id,nombre,role,empresa_id,ref_id,activo FROM users WHERE id=? LIMIT 1', [payload.id]);
+      'SELECT id,nombre,role,empresa_id,ref_id,activo,super_admin FROM users WHERE id=? LIMIT 1', [payload.id]);
     if (!actual || !actual.activo) return res.status(401).json({ error: 'Sesión no válida' });
-    req.user = { id: actual.id, nombre: actual.nombre, role: actual.role, empresa_id: actual.empresa_id, ref_id: actual.ref_id };
+    req.user = { id: actual.id, nombre: actual.nombre, role: actual.role, empresa_id: actual.empresa_id, ref_id: actual.ref_id, super_admin: !!actual.super_admin };
     next();
   } catch (e) {
     next(e);
@@ -56,4 +56,13 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { hashPassword, checkPassword, signToken, verifyToken, requireAuth, requireRole, isHashed };
+/* Middleware: exige un SUPER administrador de plataforma (super_admin=1).
+   Es el dueño de SIWEPE; ve y controla toda la plataforma, no una sola tienda. */
+function requireSuper(req, res, next) {
+  if (!req.user || !req.user.super_admin) {
+    return res.status(403).json({ error: 'Acceso solo para el super administrador de la plataforma' });
+  }
+  next();
+}
+
+module.exports = { hashPassword, checkPassword, signToken, verifyToken, requireAuth, requireRole, requireSuper, isHashed };
