@@ -706,6 +706,8 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
     await pool.query(
       'UPDATE empresas SET nombre=?, slug=?, tipos_negocio=COALESCE(?,tipos_negocio), rubro=?, rubros=COALESCE(?,rubros), descripcion=?, telefono=?, ciudad=?, pais=?, logo=?, contacto_publico=?, correo_publico=? WHERE id=?',
       [String(nombre).trim().slice(0,120), nuevoSlug, tipos ? JSON.stringify(tipos) : null, categorias?categorias[0]:(rubro||''), categorias?JSON.stringify(categorias):null, String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logo || '', String(contactoPublico || '').trim().slice(0,120), emailPublico.slice(0,120), empresaId]);
+    // Mantiene sincronizado el nombre de la tienda (config) con el de la empresa.
+    await pool.query('UPDATE config SET nombre=? WHERE empresa_id=?', [String(nombre).trim().slice(0,80), empresaId]);
     res.json({ ok: true, slug: nuevoSlug });
   } catch (err) { errorPublico(res, err); }
 });
@@ -1521,6 +1523,19 @@ async function guardarEstadoCompleto(c, E, db) {
         'INSERT INTO config (empresa_id,nombre,logo,moneda,tema,banners,galeria,pago) VALUES (?,?,?,?,?,?,?,?) ' +
         'ON DUPLICATE KEY UPDATE nombre=VALUES(nombre),logo=VALUES(logo),moneda=VALUES(moneda),tema=VALUES(tema),banners=VALUES(banners),galeria=VALUES(galeria),pago=VALUES(pago)',
         [E, cf.nombre || 'SIWEPE', cf.logo || '', cf.moneda || 'L', cf.tema || 'cielo', JSON.stringify(cf.banners || []), JSON.stringify(galeria), JSON.stringify(cf.pago || {})]);
+      // Sincroniza el nombre de la tienda con la empresa pública y su slug: al
+      // renombrar la tienda en Configuración, cambia también en Descubrir y en
+      // la URL (?e=...). Solo si es un nombre real (no el genérico 'SIWEPE').
+      const nombreTienda = String(cf.nombre || '').trim().replace(/\s+/g, ' ');
+      if (nombreTienda && nombreTienda.toLowerCase() !== 'siwepe') {
+        let base = slugify(nombreTienda), nuevoSlug = base, k = 1;
+        for (;;) {
+          const [ex] = await c.query('SELECT id FROM empresas WHERE slug=? AND id<>? LIMIT 1', [nuevoSlug, E]);
+          if (!ex.length) break;
+          nuevoSlug = base + '-' + (++k);
+        }
+        await c.query('UPDATE empresas SET nombre=?, slug=? WHERE id=?', [nombreTienda.slice(0, 120), nuevoSlug, E]);
+      }
     }
     if (db.seq) await c.query('INSERT INTO app_meta (empresa_id,seq) VALUES (?,?) ON DUPLICATE KEY UPDATE seq=VALUES(seq)', [E, JSON.stringify(db.seq)]);
 
