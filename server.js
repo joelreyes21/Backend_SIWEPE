@@ -1592,6 +1592,26 @@ async function asegurarBase() {
     }
   }
 
+  // SUPER ADMINISTRADOR de plataforma desde variables de entorno. Si están
+  // BOOTSTRAP_SUPER_EMAIL y BOOTSTRAP_SUPER_PASSWORD (mín. 8), asegura que esa
+  // cuenta exista y quede marcada super_admin=1 en cada arranque (idempotente).
+  // Cómodo para crear/recuperar el panel de plataforma sin usar la terminal.
+  {
+    const semail = String(process.env.BOOTSTRAP_SUPER_EMAIL || '').trim().toLowerCase();
+    const spass = String(process.env.BOOTSTRAP_SUPER_PASSWORD || '');
+    if (semail && spass.length >= 8) {
+      const hash = hashPassword(spass);
+      const [ex] = await pool.query('SELECT id FROM users WHERE email=? LIMIT 1', [semail]);
+      if (ex.length) {
+        await pool.query("UPDATE users SET nombre=COALESCE(NULLIF(nombre,''),'Super Admin'), password_hash=?, role='admin', super_admin=1, empresa_id=NULL, activo=1 WHERE email=?", [hash, semail]);
+        console.log('Super administrador asegurado desde variables de entorno:', semail);
+      } else {
+        await pool.query("INSERT INTO users (nombre,email,password_hash,role,super_admin,empresa_id,activo) VALUES (?,?,?,'admin',1,NULL,1)", ['Super Admin', semail, hash]);
+        console.log('Super administrador creado desde variables de entorno:', semail);
+      }
+    }
+  }
+
   // Cada empresa debe tener su fila de config y de contadores (por si faltara,
   // p. ej. tras la migración de esquema). Idempotente.
   const [emps] = await pool.query('SELECT id, nombre FROM empresas');
