@@ -201,10 +201,12 @@ const slugify = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g
    como "56838383" o "-·-·-·-"). Teléfono: solo dígitos, cantidad correcta según
    el país; en Honduras exige celular (8 dígitos que empiecen con 3, 7, 8 o 9,
    sin atarse a operadora por la portabilidad). */
-function validarNombreNegocio(nombre, etiqueta) {
+function validarNombreNegocio(nombre, etiqueta, maxLen) {
   const et = etiqueta || 'nombre';
+  const max = maxLen || 120;
   const n = String(nombre || '').trim().replace(/\s+/g, ' ');
   if (n.length < 2) return { ok: false, error: `El ${et} es muy corto.` };
+  if (n.length > max) return { ok: false, error: `El ${et} no puede pasar de ${max} caracteres.` };
   const letras = (n.match(/[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/g) || []).length;
   if (letras < 2) return { ok: false, error: `El ${et} debe tener letras, no solo números o símbolos.` };
   if ((n.match(/[0-9]/g) || []).length > 4) return { ok: false, error: `El ${et} no puede tener más de 4 números.` };
@@ -236,11 +238,12 @@ function validarTelefono(raw, pais, etiqueta) {
    NO permite números ni caracteres especiales. Para nombres de NEGOCIO o
    PRODUCTO usá validarNombreNegocio (esos sí pueden llevar números, p. ej.
    "Café 24/7"). */
-function validarNombrePersona(nombre, etiqueta) {
+function validarNombrePersona(nombre, etiqueta, maxLen) {
   const et = etiqueta || 'nombre';
+  const max = maxLen || 30;
   const n = String(nombre || '').trim().replace(/\s+/g, ' ');
   if (n.length < 2) return { ok: false, error: `El ${et} es muy corto.` };
-  if (n.length > 60) return { ok: false, error: `El ${et} es demasiado largo.` };
+  if (n.length > max) return { ok: false, error: `El ${et} no puede pasar de ${max} caracteres.` };
   if (/[0-9]/.test(n)) return { ok: false, error: `El ${et} no puede tener números.` };
   if (!/^[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ'’\- ]+$/.test(n)) return { ok: false, error: `El ${et} solo puede tener letras (sin caracteres especiales).` };
   const letras = (n.match(/[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/g) || []).length;
@@ -339,7 +342,7 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
   const { nombre, tiposNegocio, rubro, rubros, descripcion, telefono, ciudad, pais, logo, dueno, correo, password } = req.body || {};
   if (!nombre || !dueno || !correo || !password) return res.status(400).json({ error: 'Faltan datos obligatorios' });
   if (String(password).length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
-  { const vN = validarNombreNegocio(nombre, 'nombre del negocio'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vN = validarNombreNegocio(nombre, 'nombre del negocio', 30); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
   { const vD = validarNombrePersona(dueno, 'nombre del dueño'); if (!vD.ok) return res.status(400).json({ error: vD.error }); }
   { const vT = validarTelefono(telefono, pais, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   const email = String(correo).toLowerCase().trim();
@@ -682,7 +685,7 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
   if (!empresaId) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
   const { nombre, tiposNegocio, rubro, rubros, descripcion, telefono, ciudad, pais, logo, contactoPublico, correoPublico } = req.body || {};
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre del negocio' });
-  { const vN = validarNombreNegocio(nombre, 'nombre del negocio'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vN = validarNombreNegocio(nombre, 'nombre del negocio', 30); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
   { const vT = validarTelefono(telefono, pais, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   try {
     exigirImagenWeb(logo, 'Logo');
