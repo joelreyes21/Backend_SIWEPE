@@ -196,6 +196,26 @@ const PUBLIC_API_URL = process.env.PUBLIC_API_URL || `http://localhost:${PORT}`;
 const SITE_URL = process.env.SITE_URL || 'https://siwepe.shop';
 const slugify = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'empresa';
 
+/* Heurística anti-"aporreo de teclado": detecta nombres CLARAMENTE aleatorios
+   (teclado tirado, repeticiones), sin rechazar marcas estilizadas como
+   "ESSNTLS", "ASTR0WRLD" o "Youngdripstore" (esas pasan bien). No es un
+   diccionario: solo caza la basura obvia. */
+function pareceAleatorio(texto) {
+  const s = String(texto || '').toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '');
+  if (s.length < 4) return false;
+  if (/(.)\1{4,}/.test(s)) return true;                                 // 5+ mismo caracter: "aaaaa"
+  if (/^(..)\1{2,}$/.test(s) || /^(...)\1{1,}$/.test(s)) return true;    // patrón repetido: "abababab", "abcabc"
+  const filas = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm', 'qwertzuiop', 'azertyuiop', '1234567890'];
+  for (const fila of filas) {
+    for (let i = 0; i <= fila.length - 4; i++) {
+      const seq = fila.slice(i, i + 4);
+      const rev = seq.split('').reverse().join('');
+      if (s.includes(seq) || s.includes(rev)) return true;              // 4 teclas seguidas del teclado: "asdf", "qwer"
+    }
+  }
+  return false;
+}
+
 /* ───────── Validación de nombres y teléfonos (la autoridad es el backend) ─────────
    Nombre: debe tener letras; máximo 4 números y máximo 3 signos (evita basura
    como "56838383" o "-·-·-·-"). Teléfono: solo dígitos, cantidad correcta según
@@ -211,6 +231,7 @@ function validarNombreNegocio(nombre, etiqueta, maxLen) {
   if (letras < 2) return { ok: false, error: `El ${et} debe tener letras, no solo números o símbolos.` };
   if ((n.match(/[0-9]/g) || []).length > 4) return { ok: false, error: `El ${et} no puede tener más de 4 números.` };
   if ((n.match(/[^0-9a-zA-ZáéíóúüñÁÉÍÓÚÜÑ\s]/g) || []).length > 3) return { ok: false, error: `El ${et} no puede tener más de 3 signos.` };
+  if (pareceAleatorio(n)) return { ok: false, error: `El ${et} parece escrito al azar. Usá un nombre real.` };
   return { ok: true, valor: n };
 }
 const TEL_PAISES = {
@@ -248,6 +269,7 @@ function validarNombrePersona(nombre, etiqueta, maxLen) {
   if (!/^[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ'’\- ]+$/.test(n)) return { ok: false, error: `El ${et} solo puede tener letras (sin caracteres especiales).` };
   const letras = (n.match(/[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/g) || []).length;
   if (letras < 2) return { ok: false, error: `Escribí un ${et} válido.` };
+  if (pareceAleatorio(n)) return { ok: false, error: `El ${et} parece escrito al azar. Usá un nombre real.` };
   return { ok: true, valor: n };
 }
 /* Dirección: valida FORMATO razonable (tiene letras, largo mínimo, sin
