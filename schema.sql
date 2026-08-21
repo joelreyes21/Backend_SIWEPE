@@ -275,6 +275,39 @@ CREATE TABLE IF NOT EXISTS calificaciones (
   KEY idx_calif_empresa (empresa_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- CUENTAS POR COBRAR (FIADO): crédito que un negocio le da a un cliente.
+-- El saldo NO se guarda: se calcula como monto - SUM(abonos), para evitar
+-- inconsistencias financieras. Aislado por empresa (PK compuesta).
+CREATE TABLE IF NOT EXISTS creditos (
+  empresa_id        INT NOT NULL,
+  id                INT NOT NULL,
+  cliente_id        INT,                       -- users.id (cliente global) si aplica
+  cliente_manual_id INT,                       -- clientes_empresa.id si es cliente de agenda
+  cliente_nombre    VARCHAR(120) NOT NULL,     -- copia del nombre (siempre presente)
+  concepto          VARCHAR(160),
+  monto             DECIMAL(12,2) NOT NULL,    -- total del fiado
+  fecha             DATE NOT NULL,
+  vence             DATE,                      -- vencimiento (opcional)
+  estado            VARCHAR(12) NOT NULL DEFAULT 'pendiente', -- pendiente | pagado
+  created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (empresa_id, id),
+  KEY idx_credito_estado (empresa_id, estado)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Abonos (pagos parciales) de un crédito.
+CREATE TABLE IF NOT EXISTS abonos (
+  empresa_id  INT NOT NULL,
+  id          INT NOT NULL,
+  credito_id  INT NOT NULL,
+  monto       DECIMAL(12,2) NOT NULL,
+  metodo      VARCHAR(20) NOT NULL DEFAULT 'efectivo', -- efectivo | transferencia | tarjeta | otro
+  fecha       DATE NOT NULL,
+  nota        VARCHAR(160),
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (empresa_id, id),
+  KEY idx_abono_credito (empresa_id, credito_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 --  VISTAS DE SOLO LECTURA — separan `users` visualmente por rol
 --  para que no se vea todo mezclado en un cliente de MySQL.

@@ -702,7 +702,7 @@ app.delete('/api/super/tiendas/:id', requireAuth, requireSuper, async (req, res)
     await c.beginTransaction();
     const [[emp]] = await c.query('SELECT id FROM empresas WHERE id=? FOR UPDATE', [id]);
     if (!emp) { await c.rollback(); c.release(); return res.status(404).json({ error: 'Tienda no encontrada' }); }
-    for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','clientes_empresa','proveedores','categorias','config','app_meta'])
+    for (const t of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','abonos','creditos','productos','clientes_empresa','proveedores','categorias','config','app_meta'])
       await c.query('DELETE FROM `' + t + '` WHERE empresa_id=?', [id]);
     await c.query("DELETE FROM users WHERE empresa_id=? AND role IN ('admin','proveedor')", [id]);
     await c.query('DELETE FROM empresas WHERE id=?', [id]);
@@ -820,6 +820,101 @@ app.delete('/api/clientes-manuales/:id', requireAuth, requireRole('admin'), asyn
     if(!r.affectedRows) return res.status(404).json({error:'Cliente no encontrado'});
     res.json({ok:true});
   } catch(e) { errorPublico(res,e); }
+});
+
+/* ═══════════════ CUENTAS POR COBRAR / FIADO ═══════════════
+   Crédito que el negocio le da a un cliente + abonos (pagos parciales).
+   El saldo se calcula (monto - abonos), nunca se guarda, para no desincronizar.
+   Módulo REST dedicado (no pasa por el guardado masivo /api/state). */
+
+// Lista los fiados de la empresa con su saldo y total abonado.
+app.get('/api/creditos', requireAuth, requireRole('admin','proveedor'), async (req, res) => {
+  try {
+    const E = req.user.empresa_id;
+    if (!E) return res.status(403).json({ error: 'Tu usuario no está asociado a una empresa' });
+    const [rows] = await getPool().query(
+      `SELECT c.id, c.cliente_id, c.cliente_manual_id, c.cliente_nombre, c.concepto, c.monto, c.fecha, c.vence, c.estado,
+              COALESCE((SELECT SUM(a.monto) FROM abonos a WHERE a.empresa_id=c.empresa_id AND a.credito_id=c.id),0) AS abonado
+       FROM creditos c WHERE c.empresa_id=? ORDER BY (c.estado='pagado'), c.fecha DESC, c.id DESC`, [E]);
+    const creditos = rows.map(c => {
+      const monto = num(c.monto), abonado = num(c.abonado);
+      return { id: c.id, clienteNombre: c.cliente_nombre, clienteId: c.cliente_id, clienteManualId: c.cliente_manual_id,
+        concepto: c.concepto || '', monto, abonado, saldo: Math.max(0, monto - abonado),
+        fecha: c.fecha, vence: c.vence, estado: c.estado };
+    });
+    res.json({ creditos, totalPorCobrar: creditos.reduce((s, c) => s + c.saldo, 0) });
+  } catch (e) { errorPublico(res, e); }
+});
+
+// Detalle de un fiado con la lista de sus abonos.
+app.get('/api/creditos/:id', requireAuth, requireRole('admin','proveedor'), async (req, res) => {
+  try {
+    const E = req.user.empresa_id, id = num(req.params.id);
+    const [[c]] = await getPool().query('SELECT * FROM creditos WHERE empresa_id=? AND id=?', [E, id]);
+    if (!c) return res.status(404).json({ error: 'Fiado no encontrado' });
+    const [abonos] = await getPool().query('SELECT id, monto, metodo, fecha, nota FROM abonos WHERE empresa_id=? AND credito_id=? ORDER BY fecha, id', [E, id]);
+    const abonado = abonos.reduce((s, a) => s + num(a.monto), 0);
+    res.json({ credito: { id: c.id, clienteNombre: c.cliente_nombre, concepto: c.concepto || '', monto: num(c.monto), abonado, saldo: Math.max(0, num(c.monto) - abonado), fecha: c.fecha, vence: c.vence, estado: c.estado }, abonos });
+  } catch (e) { errorPublico(res, e); }
+});
+
+// Crea un fiado. Solo admin.
+app.post('/api/creditos', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const E = req.user.empresa_id;
+    if (!E) return res.status(403).json({ error: 'Tu usuario no está asociado a una empresa' });
+    const b = req.body || {};
+    const nombre = String(b.clienteNombre || '').trim().slice(0, 120);
+    const monto = num(b.monto);
+    if (!nombre) return res.status(400).json({ error: 'Escribe el nombre del cliente' });
+    { const vN = validarNombrePersona(nombre, 'nombre del cliente'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+    if (!(monto > 0)) return res.status(400).json({ error: 'El monto del fiado debe ser mayor que 0' });
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(b.fecha) ? b.fecha : new Date().toISOString().slice(0, 10);
+    const vence = /^\d{4}-\d{2}-\d{2}$/.test(b.vence) ? b.vence : null;
+    const pool = getPool();
+    const [[m]] = await pool.query('SELECT COALESCE(MAX(id),0)+1 AS nid FROM creditos WHERE empresa_id=?', [E]);
+    await pool.query('INSERT INTO creditos (empresa_id,id,cliente_id,cliente_manual_id,cliente_nombre,concepto,monto,fecha,vence,estado) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [E, m.nid, num(b.clienteId) || null, num(b.clienteManualId) || null, nombre, String(b.concepto || '').slice(0, 160), monto, fecha, vence, 'pendiente']);
+    res.status(201).json({ ok: true, id: m.nid });
+  } catch (e) { errorPublico(res, e); }
+});
+
+// Registra un abono (pago parcial). NUNCA puede exceder el saldo. Solo admin.
+app.post('/api/creditos/:id/abonos', requireAuth, requireRole('admin'), async (req, res) => {
+  const pool = getPool();
+  const c = await pool.getConnection();
+  try {
+    const E = req.user.empresa_id, id = num(req.params.id), rb = req.body || {}, monto = num(rb.monto);
+    if (!(monto > 0)) { c.release(); return res.status(400).json({ error: 'El abono debe ser mayor que 0' }); }
+    await c.beginTransaction();
+    const [[cred]] = await c.query('SELECT monto FROM creditos WHERE empresa_id=? AND id=? FOR UPDATE', [E, id]);
+    if (!cred) { await c.rollback(); c.release(); return res.status(404).json({ error: 'Fiado no encontrado' }); }
+    const [[ag]] = await c.query('SELECT COALESCE(SUM(monto),0) AS ab FROM abonos WHERE empresa_id=? AND credito_id=?', [E, id]);
+    const saldo = num(cred.monto) - num(ag.ab);
+    if (monto > saldo + 0.001) { await c.rollback(); c.release(); return res.status(400).json({ error: `El abono no puede ser mayor que el saldo (L ${saldo.toFixed(2)}).` }); }
+    const metodo = ['efectivo', 'transferencia', 'tarjeta', 'otro'].includes(rb.metodo) ? rb.metodo : 'efectivo';
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(rb.fecha) ? rb.fecha : new Date().toISOString().slice(0, 10);
+    const [[m]] = await c.query('SELECT COALESCE(MAX(id),0)+1 AS nid FROM abonos WHERE empresa_id=?', [E]);
+    await c.query('INSERT INTO abonos (empresa_id,id,credito_id,monto,metodo,fecha,nota) VALUES (?,?,?,?,?,?,?)',
+      [E, m.nid, id, monto, metodo, fecha, String(rb.nota || '').slice(0, 160)]);
+    const nuevoSaldo = saldo - monto;
+    if (nuevoSaldo <= 0.001) await c.query("UPDATE creditos SET estado='pagado' WHERE empresa_id=? AND id=?", [E, id]);
+    await c.commit();
+    res.json({ ok: true, saldo: Math.max(0, nuevoSaldo), estado: nuevoSaldo <= 0.001 ? 'pagado' : 'pendiente' });
+  } catch (e) { try { await c.rollback(); } catch (_) {} errorPublico(res, e); }
+  finally { c.release(); }
+});
+
+// Elimina un fiado y sus abonos. Solo admin.
+app.delete('/api/creditos/:id', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const E = req.user.empresa_id, id = num(req.params.id);
+    const pool = getPool();
+    const [r] = await pool.query('DELETE FROM creditos WHERE empresa_id=? AND id=?', [E, id]);
+    if (!r.affectedRows) return res.status(404).json({ error: 'Fiado no encontrado' });
+    await pool.query('DELETE FROM abonos WHERE empresa_id=? AND credito_id=?', [E, id]);
+    res.json({ ok: true });
+  } catch (e) { errorPublico(res, e); }
 });
 
 /* Guardado dedicado para la galería. Evita enviar y reescribir todo el estado

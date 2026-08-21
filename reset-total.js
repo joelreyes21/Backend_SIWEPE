@@ -19,6 +19,7 @@ const { hashPassword } = require('./auth');
 // Orden de borrado: primero las tablas hijas, luego las padre (por si hubiera FKs).
 const TABLAS = [
   'mensajes', 'pedido_items', 'pedidos', 'movimientos', 'ventas', 'compras',
+  'abonos', 'creditos', 'calificaciones',
   'productos', 'clientes_empresa', 'proveedores', 'categorias', 'config',
   'app_meta', 'registros_pendientes', 'password_resets', 'onboarding_sessions',
   'empresas', 'users',
