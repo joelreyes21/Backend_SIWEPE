@@ -5,7 +5,8 @@ const { initDb, getPool } = require('./db');
 const arg = process.argv.find(x => x.startsWith('--empresa='));
 const empresaRef = arg ? arg.slice('--empresa='.length).trim() : '';
 const confirmacion = String(process.env.RESET_CONFIRM || '');
-const seqCero = { producto:0, categoria:0, proveedor:0, cliente:0, compra:0, venta:0, movimiento:0, pedido:0, mensaje:0 };
+const seqCero = { producto:0, categoria:0, proveedor:0, cliente:0, compra:0, venta:0, movimiento:0, pedido:0, mensaje:0,
+  gasto:0, cuentaPagar:0, pagoCuentaPagar:0, factura:0, turnoCaja:0, movimientoCaja:0, promocion:0, mesa:0, comanda:0, comandaItem:0 };
 
 async function run() {
   if (!empresaRef) throw new Error('Indica una empresa: npm run reset -- --empresa=mi-slug');
@@ -20,7 +21,7 @@ async function run() {
     const [[empresa]] = await c.query(`SELECT id,nombre,slug FROM empresas WHERE ${campo}=? LIMIT 1`, [campo === 'id' ? Number(empresaRef) : empresaRef]);
     if (!empresa) throw new Error('Empresa no encontrada. No se borró nada.');
     await c.beginTransaction();
-    for (const tabla of ['mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','proveedores','categorias']) {
+    for (const tabla of ['notificacion_lecturas','comanda_items','comandas','mesas','movimientos_caja','turnos_caja','promociones','pagos_cuenta_pagar','cuentas_pagar','gastos','facturas','abonos','creditos','mensajes','pedido_items','pedidos','movimientos','ventas','compras','productos','proveedores','categorias']) {
       await c.query(`DELETE FROM ${tabla} WHERE empresa_id=?`, [empresa.id]);
     }
     await c.query('UPDATE app_meta SET seq=?,version=version+1 WHERE empresa_id=?', [JSON.stringify(seqCero), empresa.id]);

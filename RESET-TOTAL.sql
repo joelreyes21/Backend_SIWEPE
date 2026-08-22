@@ -18,6 +18,12 @@
 
 SET FOREIGN_KEY_CHECKS = 0;
 
+TRUNCATE TABLE pagos_cuenta_pagar;
+TRUNCATE TABLE cuentas_pagar;
+TRUNCATE TABLE gastos;
+TRUNCATE TABLE facturas;
+TRUNCATE TABLE abonos;
+TRUNCATE TABLE creditos;
 TRUNCATE TABLE mensajes;
 TRUNCATE TABLE pedido_items;
 TRUNCATE TABLE pedidos;

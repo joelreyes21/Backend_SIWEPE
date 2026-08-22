@@ -174,6 +174,8 @@ CREATE TABLE IF NOT EXISTS productos (
   publicado_alguna_vez TINYINT NOT NULL DEFAULT 0,
   marca         VARCHAR(80),
   tipo_piel     JSON,
+  codigo_barras VARCHAR(96),               -- identificador interno opcional (Code 128)
+  variantes     JSON,                      -- talla/color/presentación con stock y precio propios
   PRIMARY KEY (empresa_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -201,6 +203,11 @@ CREATE TABLE IF NOT EXISTS ventas (
   origen_stock       VARCHAR(24) NOT NULL DEFAULT 'tienda', -- tienda | inventario | mixto
   stock_tienda_usado INT NOT NULL DEFAULT 0,
   stock_inventario_usado INT NOT NULL DEFAULT 0,
+  ticket              VARCHAR(50),
+  variante_id         VARCHAR(80),
+  variante_nombre     VARCHAR(180),
+  metodo_pago         VARCHAR(24) NOT NULL DEFAULT 'efectivo',
+  turno_caja_id       INT,
   cantidad    INT NOT NULL,
   precio      DECIMAL(12,2) NOT NULL,
   fecha       DATE NOT NULL,
@@ -215,6 +222,8 @@ CREATE TABLE IF NOT EXISTS movimientos (
   tipo        VARCHAR(12) NOT NULL,   -- entrada | salida | ajuste
   signo       VARCHAR(1),             -- para ajustes: + o -
   producto_id INT,
+  variante_id VARCHAR(80),
+  variante_nombre VARCHAR(180),
   cantidad    INT NOT NULL,
   fecha       DATE NOT NULL,
   usuario     VARCHAR(80),
@@ -306,6 +315,190 @@ CREATE TABLE IF NOT EXISTS abonos (
   created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (empresa_id, id),
   KEY idx_abono_credito (empresa_id, credito_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+--  CONTABILIDAD OPERATIVA
+--  Este módulo organiza el control interno del negocio. No pretende sustituir
+--  libros contables ni una factura fiscal autorizada por la administración
+--  tributaria. Ventas, compras y cuentas por cobrar siguen siendo sus fuentes
+--  originales; aquí sólo se guardan gastos, obligaciones y comprobantes.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS gastos (
+  empresa_id    INT NOT NULL,
+  id            INT NOT NULL,
+  categoria     VARCHAR(60) NOT NULL DEFAULT 'Otros',
+  descripcion   VARCHAR(180) NOT NULL,
+  proveedor_id  INT,
+  monto         DECIMAL(12,2) NOT NULL,
+  fecha         DATE NOT NULL,
+  metodo        VARCHAR(20) NOT NULL DEFAULT 'efectivo',
+  referencia    VARCHAR(80),
+  comprobante   LONGTEXT,
+  estado        VARCHAR(12) NOT NULL DEFAULT 'activo', -- activo | anulado
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (empresa_id, id),
+  KEY idx_gasto_fecha (empresa_id, fecha),
+  KEY idx_gasto_estado (empresa_id, estado)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS cuentas_pagar (
+  empresa_id      INT NOT NULL,
+  id              INT NOT NULL,
+  proveedor_id    INT,
+  proveedor_nombre VARCHAR(120) NOT NULL,
+  concepto        VARCHAR(180) NOT NULL,
+  monto           DECIMAL(12,2) NOT NULL,
+  fecha           DATE NOT NULL,
+  vence           DATE,
+  estado          VARCHAR(12) NOT NULL DEFAULT 'pendiente', -- pendiente | pagada | anulada
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (empresa_id, id),
+  KEY idx_cxp_estado (empresa_id, estado),
+  KEY idx_cxp_vence (empresa_id, vence)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS pagos_cuenta_pagar (
+  empresa_id  INT NOT NULL,
+  id          INT NOT NULL,
+  cuenta_id   INT NOT NULL,
+  monto       DECIMAL(12,2) NOT NULL,
+  metodo      VARCHAR(20) NOT NULL DEFAULT 'efectivo',
+  fecha       DATE NOT NULL,
+  referencia VARCHAR(80),
+  nota        VARCHAR(180),
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (empresa_id, id),
+  KEY idx_pago_cxp (empresa_id, cuenta_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS facturas (
+  empresa_id       INT NOT NULL,
+  id               INT NOT NULL,
+  numero           VARCHAR(50) NOT NULL,
+  cliente_nombre   VARCHAR(120) NOT NULL,
+  cliente_identidad VARCHAR(40),
+  fecha            DATE NOT NULL,
+  vence            DATE,
+  subtotal         DECIMAL(12,2) NOT NULL DEFAULT 0,
+  impuesto         DECIMAL(12,2) NOT NULL DEFAULT 0,
+  total            DECIMAL(12,2) NOT NULL DEFAULT 0,
+  estado           VARCHAR(12) NOT NULL DEFAULT 'borrador', -- borrador | emitida | pagada | anulada
+  origen           VARCHAR(20) NOT NULL DEFAULT 'manual',
+  referencia_id    INT,
+  items            JSON,
+  notas            VARCHAR(255),
+  created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (empresa_id, id),
+  UNIQUE KEY uq_factura_numero (empresa_id, numero),
+  KEY idx_factura_fecha (empresa_id, fecha),
+  KEY idx_factura_estado (empresa_id, estado)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+--  OPERACIÓN COMERCIAL: CAJA, PROMOCIONES Y NOTIFICACIONES
+-- ============================================================
+CREATE TABLE IF NOT EXISTS turnos_caja (
+  empresa_id       INT NOT NULL,
+  id               INT NOT NULL,
+  usuario_id       INT NOT NULL,
+  usuario_nombre   VARCHAR(120) NOT NULL,
+  apertura         DATETIME NOT NULL,
+  cierre           DATETIME,
+  fondo_inicial    DECIMAL(12,2) NOT NULL DEFAULT 0,
+  efectivo_esperado DECIMAL(12,2),
+  efectivo_contado DECIMAL(12,2),
+  diferencia       DECIMAL(12,2),
+  estado           VARCHAR(12) NOT NULL DEFAULT 'abierto', -- abierto | cerrado
+  notas             VARCHAR(255),
+  PRIMARY KEY (empresa_id,id),
+  KEY idx_turno_estado (empresa_id,estado),
+  KEY idx_turno_usuario (empresa_id,usuario_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS movimientos_caja (
+  empresa_id  INT NOT NULL,
+  id          INT NOT NULL,
+  turno_id    INT NOT NULL,
+  tipo        VARCHAR(20) NOT NULL, -- venta | entrada | salida | retiro
+  metodo      VARCHAR(20) NOT NULL DEFAULT 'efectivo',
+  monto       DECIMAL(12,2) NOT NULL,
+  descripcion VARCHAR(180) NOT NULL,
+  referencia  VARCHAR(80),
+  fecha       DATETIME NOT NULL,
+  usuario_id  INT,
+  PRIMARY KEY (empresa_id,id),
+  KEY idx_mov_caja_turno (empresa_id,turno_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS promociones (
+  empresa_id    INT NOT NULL,
+  id            INT NOT NULL,
+  nombre        VARCHAR(120) NOT NULL,
+  tipo          VARCHAR(24) NOT NULL, -- porcentaje | monto | precio_fijo
+  valor         DECIMAL(12,2) NOT NULL,
+  alcance       VARCHAR(20) NOT NULL DEFAULT 'productos', -- todos | productos | categorias
+  objetivos     JSON,
+  cantidad_min  INT NOT NULL DEFAULT 1,
+  inicia        DATE NOT NULL,
+  termina       DATE NOT NULL,
+  estado        VARCHAR(12) NOT NULL DEFAULT 'activo',
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (empresa_id,id),
+  KEY idx_promo_vigencia (empresa_id,estado,inicia,termina)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS notificacion_lecturas (
+  empresa_id INT NOT NULL,
+  user_id    INT NOT NULL,
+  clave      VARCHAR(120) NOT NULL,
+  leido_at   DATETIME NOT NULL,
+  PRIMARY KEY (empresa_id,user_id,clave)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+--  MÓDULO GASTRONÓMICO (sin facturación fiscal ni pagos con tarjeta)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS mesas (
+  empresa_id INT NOT NULL,
+  id         INT NOT NULL,
+  nombre     VARCHAR(80) NOT NULL,
+  capacidad  INT NOT NULL DEFAULT 2,
+  estado     VARCHAR(12) NOT NULL DEFAULT 'libre', -- libre | ocupada | inactiva
+  PRIMARY KEY (empresa_id,id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS comandas (
+  empresa_id    INT NOT NULL,
+  id            INT NOT NULL,
+  numero        VARCHAR(40) NOT NULL,
+  mesa_id       INT,
+  tipo          VARCHAR(12) NOT NULL DEFAULT 'mesa', -- mesa | llevar
+  cliente_nombre VARCHAR(120),
+  estado        VARCHAR(16) NOT NULL DEFAULT 'abierta',
+  total         DECIMAL(12,2) NOT NULL DEFAULT 0,
+  notas         VARCHAR(255),
+  abierta_at    DATETIME NOT NULL,
+  cerrada_at    DATETIME,
+  PRIMARY KEY (empresa_id,id),
+  UNIQUE KEY uq_comanda_numero (empresa_id,numero),
+  KEY idx_comanda_estado (empresa_id,estado)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS comanda_items (
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  empresa_id      INT NOT NULL,
+  comanda_id      INT NOT NULL,
+  producto_id     INT NOT NULL,
+  variante_id     VARCHAR(80),
+  variante_nombre VARCHAR(180),
+  nombre          VARCHAR(140) NOT NULL,
+  cantidad        INT NOT NULL,
+  precio          DECIMAL(12,2) NOT NULL,
+  subtotal        DECIMAL(12,2) NOT NULL,
+  nota            VARCHAR(180),
+  estado          VARCHAR(16) NOT NULL DEFAULT 'pendiente',
+  KEY idx_comanda_item (empresa_id,comanda_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================

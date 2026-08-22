@@ -7,6 +7,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { initDb, getPool } = require('./db');
 const { hashPassword, checkPassword, signToken, requireAuth, requireRole, requireSuper } = require('./auth');
+const operacionesRouter = require('./operaciones');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -48,6 +49,7 @@ app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1500, standardHeaders: true, 
 
 app.use(express.json({ limit: '30mb' }));           // imágenes en base64
 app.use(express.urlencoded({ extended: true, limit: '30mb' }));
+app.use('/api', operacionesRouter);
 
 /* Este servidor es SOLO API (el front-end se hostea aparte). */
 app.get('/', (req, res) => res.json({ ok: true, service: 'SIWEPE API', ts: new Date().toISOString() }));
@@ -185,7 +187,32 @@ function mapProducto(r) {
   return { id: r.id, codigo: r.codigo, nombre: r.nombre, categoria_id: r.categoria_id,
     descripcion: r.descripcion || '', precio_compra: num(r.precio_compra), precio_venta: num(r.precio_venta),
     stock: num(r.stock), stock_inventario: num(r.stock_inventario), stock_min: num(r.stock_min), imagen: r.imagen || '', estado: r.estado,
-    imagenes, destacado: !!r.destacado, publicado_alguna_vez: !!r.publicado_alguna_vez, marca: r.marca || '', tipoPiel: arr(r.tipo_piel) };
+    imagenes, destacado: !!r.destacado, publicado_alguna_vez: !!r.publicado_alguna_vez, marca: r.marca || '', tipoPiel: arr(r.tipo_piel),
+    codigoBarras: r.codigo_barras || '', variantes: arr(r.variantes) };
+}
+
+function nombreVariantePublica(v) {
+  if (!v) return '';
+  if (v.nombre) return String(v.nombre).slice(0,180);
+  const a=v.atributos&&typeof v.atributos==='object'?v.atributos:{};
+  return Object.entries(a).filter(([,x])=>x).map(([k,x])=>`${k}: ${x}`).join(' · ').slice(0,180);
+}
+function promoAplicaProducto(pr,p){
+  const objetivos=arr(pr.objetivos).map(Number);
+  return pr.alcance==='todos'||(pr.alcance==='categorias'&&objetivos.includes(num(p.categoria_id)))||(pr.alcance==='productos'&&objetivos.includes(num(p.id)));
+}
+function precioPromocional(p,base,cantidad,promos){
+  let mejor={precio:num(base),promocion:null};
+  for(const pr of promos||[]){
+    if(cantidad<num(pr.cantidad_min)||!promoAplicaProducto(pr,p)) continue;
+    let precio=num(base);
+    if(pr.tipo==='porcentaje')precio*=1-Math.min(100,num(pr.valor))/100;
+    else if(pr.tipo==='monto')precio=Math.max(0,precio-num(pr.valor));
+    else if(pr.tipo==='precio_fijo')precio=Math.max(0,num(pr.valor));
+    precio=+precio.toFixed(2);
+    if(precio<mejor.precio)mejor={precio,promocion:{id:pr.id,nombre:pr.nombre,tipo:pr.tipo,valor:num(pr.valor)}};
+  }
+  return mejor;
 }
 
 /* ───────── CORREO (Resend) para verificación de empresas ───────── */
@@ -851,7 +878,7 @@ app.get('/api/creditos/:id', requireAuth, requireRole('admin','proveedor'), asyn
   try {
     const E = req.user.empresa_id, id = num(req.params.id);
     const [[c]] = await getPool().query('SELECT * FROM creditos WHERE empresa_id=? AND id=?', [E, id]);
-    if (!c) return res.status(404).json({ error: 'Fiado no encontrado' });
+    if (!c) return res.status(404).json({ error: 'Cuenta por cobrar no encontrada' });
     const [abonos] = await getPool().query('SELECT id, monto, metodo, fecha, nota FROM abonos WHERE empresa_id=? AND credito_id=? ORDER BY fecha, id', [E, id]);
     const abonado = abonos.reduce((s, a) => s + num(a.monto), 0);
     res.json({ credito: { id: c.id, clienteNombre: c.cliente_nombre, concepto: c.concepto || '', monto: num(c.monto), abonado, saldo: Math.max(0, num(c.monto) - abonado), fecha: c.fecha, vence: c.vence, estado: c.estado }, abonos });
@@ -868,7 +895,7 @@ app.post('/api/creditos', requireAuth, requireRole('admin'), async (req, res) =>
     const monto = num(b.monto);
     if (!nombre) return res.status(400).json({ error: 'Escribe el nombre del cliente' });
     { const vN = validarNombrePersona(nombre, 'nombre del cliente'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
-    if (!(monto > 0)) return res.status(400).json({ error: 'El monto del fiado debe ser mayor que 0' });
+    if (!(monto > 0)) return res.status(400).json({ error: 'El monto de la cuenta por cobrar debe ser mayor que 0' });
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(b.fecha) ? b.fecha : new Date().toISOString().slice(0, 10);
     const vence = /^\d{4}-\d{2}-\d{2}$/.test(b.vence) ? b.vence : null;
     const pool = getPool();
@@ -888,7 +915,7 @@ app.post('/api/creditos/:id/abonos', requireAuth, requireRole('admin'), async (r
     if (!(monto > 0)) { c.release(); return res.status(400).json({ error: 'El abono debe ser mayor que 0' }); }
     await c.beginTransaction();
     const [[cred]] = await c.query('SELECT monto FROM creditos WHERE empresa_id=? AND id=? FOR UPDATE', [E, id]);
-    if (!cred) { await c.rollback(); c.release(); return res.status(404).json({ error: 'Fiado no encontrado' }); }
+    if (!cred) { await c.rollback(); c.release(); return res.status(404).json({ error: 'Cuenta por cobrar no encontrada' }); }
     const [[ag]] = await c.query('SELECT COALESCE(SUM(monto),0) AS ab FROM abonos WHERE empresa_id=? AND credito_id=?', [E, id]);
     const saldo = num(cred.monto) - num(ag.ab);
     if (monto > saldo + 0.001) { await c.rollback(); c.release(); return res.status(400).json({ error: `El abono no puede ser mayor que el saldo (L ${saldo.toFixed(2)}).` }); }
@@ -911,10 +938,158 @@ app.delete('/api/creditos/:id', requireAuth, requireRole('admin'), async (req, r
     const E = req.user.empresa_id, id = num(req.params.id);
     const pool = getPool();
     const [r] = await pool.query('DELETE FROM creditos WHERE empresa_id=? AND id=?', [E, id]);
-    if (!r.affectedRows) return res.status(404).json({ error: 'Fiado no encontrado' });
+    if (!r.affectedRows) return res.status(404).json({ error: 'Cuenta por cobrar no encontrada' });
     await pool.query('DELETE FROM abonos WHERE empresa_id=? AND credito_id=?', [E, id]);
     res.json({ ok: true });
   } catch (e) { errorPublico(res, e); }
+});
+
+/* ═══════════════ CONTABILIDAD OPERATIVA ═══════════════
+   Consolida las fuentes que ya son autoridad (ventas, compras y fiados) y
+   agrega gastos, cuentas por pagar y comprobantes internos. No genera una
+   factura fiscal autorizada: para eso hará falta integrar el proveedor y la
+   numeración exigidos por la autoridad tributaria del país. */
+const METODOS_CONTABLES = new Set(['efectivo','transferencia','tarjeta','cheque','otro']);
+const TABLAS_CONTABLES = Object.freeze({gasto:'gastos',cuentaPagar:'cuentas_pagar',pagoCuentaPagar:'pagos_cuenta_pagar',factura:'facturas'});
+function fechaContable(v, opcional=false) {
+  if (opcional && !v) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))) return String(v);
+  if (opcional) return null;
+  return new Date().toISOString().slice(0,10);
+}
+function metodoContable(v) { return METODOS_CONTABLES.has(String(v||'')) ? String(v) : 'efectivo'; }
+async function siguienteIdContable(c,E,clave) {
+  const tabla=TABLAS_CONTABLES[clave];
+  if(!tabla) throw Object.assign(new Error('Secuencia contable inválida'),{status:500});
+  const [[meta]]=await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE',[E]);
+  const seq=obj(meta&&meta.seq);
+  const [[mx]]=await c.query(`SELECT COALESCE(MAX(id),0) AS maxId FROM ${tabla} WHERE empresa_id=?`,[E]);
+  const id=Math.max(num(seq[clave]),num(mx&&mx.maxId))+1;
+  seq[clave]=id;
+  await c.query('UPDATE app_meta SET seq=? WHERE empresa_id=?',[JSON.stringify(seq),E]);
+  return id;
+}
+function mapFactura(r){
+  return {id:r.id,numero:r.numero,clienteNombre:r.cliente_nombre,clienteIdentidad:r.cliente_identidad||'',fecha:r.fecha,vence:r.vence,
+    subtotal:num(r.subtotal),impuesto:num(r.impuesto),total:num(r.total),estado:r.estado,origen:r.origen,referenciaId:r.referencia_id,
+    items:arr(r.items),notas:r.notas||''};
+}
+
+app.get('/api/contabilidad', requireAuth, requireRole('admin','proveedor'), async(req,res)=>{
+  try{
+    const E=req.user.empresa_id;
+    if(!E) return res.status(403).json({error:'Tu usuario no está asociado a una empresa'});
+    const p=getPool();
+    const [[ventas],[compras],[gastos],[creditos],[cuentas],[facturas]]=await Promise.all([
+      p.query("SELECT id,producto_id,cliente_nombre,pedido_id,cantidad,precio,fecha,total,origen_stock FROM ventas WHERE empresa_id=? AND estado='activa' ORDER BY fecha DESC,id DESC",[E]),
+      p.query('SELECT id,producto_id,proveedor_id,cantidad,precio,fecha,obs FROM compras WHERE empresa_id=? ORDER BY fecha DESC,id DESC',[E]),
+      p.query('SELECT id,categoria,descripcion,proveedor_id,monto,fecha,metodo,referencia,comprobante,estado FROM gastos WHERE empresa_id=? ORDER BY fecha DESC,id DESC',[E]),
+      p.query(`SELECT c.id,c.cliente_nombre,c.concepto,c.monto,c.fecha,c.vence,c.estado,
+        COALESCE((SELECT SUM(a.monto) FROM abonos a WHERE a.empresa_id=c.empresa_id AND a.credito_id=c.id),0) abonado
+        FROM creditos c WHERE c.empresa_id=? ORDER BY c.fecha DESC,c.id DESC`,[E]),
+      p.query(`SELECT c.id,c.proveedor_id,c.proveedor_nombre,c.concepto,c.monto,c.fecha,c.vence,c.estado,
+        COALESCE((SELECT SUM(pg.monto) FROM pagos_cuenta_pagar pg WHERE pg.empresa_id=c.empresa_id AND pg.cuenta_id=c.id),0) pagado
+        FROM cuentas_pagar c WHERE c.empresa_id=? ORDER BY c.fecha DESC,c.id DESC`,[E]),
+      p.query('SELECT * FROM facturas WHERE empresa_id=? ORDER BY fecha DESC,id DESC',[E])
+    ]);
+    const ventasMap=ventas.map(x=>({...x,precio:num(x.precio),total:num(x.total)}));
+    const comprasMap=compras.map(x=>({...x,precio:num(x.precio),total:+(num(x.cantidad)*num(x.precio)).toFixed(2)}));
+    const gastosMap=gastos.map(x=>({...x,monto:num(x.monto)}));
+    const cobrar=creditos.map(x=>({...x,monto:num(x.monto),abonado:num(x.abonado),saldo:Math.max(0,num(x.monto)-num(x.abonado))}));
+    const pagar=cuentas.map(x=>({...x,monto:num(x.monto),pagado:num(x.pagado),saldo:Math.max(0,num(x.monto)-num(x.pagado))}));
+    const resumen={
+      ingresos:ventasMap.reduce((s,x)=>s+x.total,0),
+      compras:comprasMap.reduce((s,x)=>s+x.total,0),
+      gastos:gastosMap.filter(x=>x.estado==='activo').reduce((s,x)=>s+x.monto,0),
+      porCobrar:cobrar.filter(x=>x.estado!=='pagado').reduce((s,x)=>s+x.saldo,0),
+      porPagar:pagar.filter(x=>x.estado==='pendiente').reduce((s,x)=>s+x.saldo,0),
+      facturado:facturas.filter(x=>['emitida','pagada'].includes(x.estado)).reduce((s,x)=>s+num(x.total),0)
+    };
+    resumen.flujoOperativo=+(resumen.ingresos-resumen.gastos).toFixed(2);
+    res.json({resumen,ventas:ventasMap,compras:comprasMap,gastos:gastosMap,cuentasCobrar:cobrar,cuentasPagar:pagar,facturas:facturas.map(mapFactura),avisoFiscal:'Los comprobantes de este módulo son internos y no sustituyen una factura fiscal autorizada.'});
+  }catch(e){errorPublico(res,e);}
+});
+
+app.post('/api/contabilidad/gastos', requireAuth, requireRole('admin'), async(req,res)=>{
+  const E=req.user.empresa_id,b=req.body||{},monto=num(b.monto),descripcion=String(b.descripcion||'').trim().slice(0,180);
+  if(!descripcion) return res.status(400).json({error:'Describe el gasto'});
+  if(!(monto>0)) return res.status(400).json({error:'El monto del gasto debe ser mayor que cero'});
+  try{
+    const comprobante=exigirImagenWeb(b.comprobante,'Comprobante del gasto');
+    const c=await getPool().getConnection();
+    try{await c.beginTransaction();const id=await siguienteIdContable(c,E,'gasto');
+      await c.query('INSERT INTO gastos (empresa_id,id,categoria,descripcion,proveedor_id,monto,fecha,metodo,referencia,comprobante,estado) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        [E,id,String(b.categoria||'Otros').trim().slice(0,60)||'Otros',num(b.proveedorId)||null,monto,fechaContable(b.fecha),metodoContable(b.metodo),String(b.referencia||'').trim().slice(0,80),comprobante,'activo']);
+      await c.commit();res.status(201).json({ok:true,id});
+    }catch(e){await c.rollback();throw e;}finally{c.release();}
+  }catch(e){errorPublico(res,e);}
+});
+
+app.patch('/api/contabilidad/gastos/:id/anular', requireAuth, requireRole('admin'), async(req,res)=>{
+  try{const E=req.user.empresa_id,id=num(req.params.id);const [r]=await getPool().query("UPDATE gastos SET estado='anulado' WHERE empresa_id=? AND id=? AND estado='activo'",[E,id]);
+    if(!r.affectedRows)return res.status(404).json({error:'Gasto activo no encontrado'});res.json({ok:true});
+  }catch(e){errorPublico(res,e);}
+});
+
+app.post('/api/contabilidad/cuentas-pagar', requireAuth, requireRole('admin'), async(req,res)=>{
+  const E=req.user.empresa_id,b=req.body||{},monto=num(b.monto),nombre=String(b.proveedorNombre||'').trim().slice(0,120),concepto=String(b.concepto||'').trim().slice(0,180);
+  if(!nombre||!concepto) return res.status(400).json({error:'Proveedor y concepto son obligatorios'});
+  if(!(monto>0)) return res.status(400).json({error:'El monto debe ser mayor que cero'});
+  const c=await getPool().getConnection();
+  try{await c.beginTransaction();const id=await siguienteIdContable(c,E,'cuentaPagar');
+    await c.query('INSERT INTO cuentas_pagar (empresa_id,id,proveedor_id,proveedor_nombre,concepto,monto,fecha,vence,estado) VALUES (?,?,?,?,?,?,?,?,?)',
+      [E,id,num(b.proveedorId)||null,nombre,concepto,monto,fechaContable(b.fecha),fechaContable(b.vence,true),'pendiente']);
+    await c.commit();res.status(201).json({ok:true,id});
+  }catch(e){await c.rollback();errorPublico(res,e);}finally{c.release();}
+});
+
+app.post('/api/contabilidad/cuentas-pagar/:id/pagos', requireAuth, requireRole('admin'), async(req,res)=>{
+  const E=req.user.empresa_id,id=num(req.params.id),b=req.body||{},monto=num(b.monto),c=await getPool().getConnection();
+  if(!(monto>0)){c.release();return res.status(400).json({error:'El pago debe ser mayor que cero'});}
+  try{await c.beginTransaction();
+    const [[cuenta]]=await c.query("SELECT monto,estado FROM cuentas_pagar WHERE empresa_id=? AND id=? FOR UPDATE",[E,id]);
+    if(!cuenta||cuenta.estado!=='pendiente'){await c.rollback();return res.status(404).json({error:'Cuenta pendiente no encontrada'});}
+    const [[sum]]=await c.query('SELECT COALESCE(SUM(monto),0) pagado FROM pagos_cuenta_pagar WHERE empresa_id=? AND cuenta_id=?',[E,id]);
+    const saldo=num(cuenta.monto)-num(sum.pagado);
+    if(monto>saldo+.001){await c.rollback();return res.status(400).json({error:`El pago no puede superar el saldo (L ${saldo.toFixed(2)}).`});}
+    const pagoId=await siguienteIdContable(c,E,'pagoCuentaPagar');
+    await c.query('INSERT INTO pagos_cuenta_pagar (empresa_id,id,cuenta_id,monto,metodo,fecha,referencia,nota) VALUES (?,?,?,?,?,?,?,?)',
+      [E,pagoId,id,monto,metodoContable(b.metodo),fechaContable(b.fecha),String(b.referencia||'').trim().slice(0,80),String(b.nota||'').trim().slice(0,180)]);
+    const restante=saldo-monto;if(restante<=.001)await c.query("UPDATE cuentas_pagar SET estado='pagada' WHERE empresa_id=? AND id=?",[E,id]);
+    await c.commit();res.json({ok:true,saldo:Math.max(0,restante),estado:restante<=.001?'pagada':'pendiente'});
+  }catch(e){await c.rollback();errorPublico(res,e);}finally{c.release();}
+});
+
+app.patch('/api/contabilidad/cuentas-pagar/:id/anular', requireAuth, requireRole('admin'), async(req,res)=>{
+  try{const E=req.user.empresa_id,id=num(req.params.id);const [r]=await getPool().query("UPDATE cuentas_pagar SET estado='anulada' WHERE empresa_id=? AND id=? AND estado='pendiente'",[E,id]);
+    if(!r.affectedRows)return res.status(404).json({error:'Cuenta pendiente no encontrada'});res.json({ok:true});
+  }catch(e){errorPublico(res,e);}
+});
+
+app.post('/api/contabilidad/facturas', requireAuth, requireRole('admin'), async(req,res)=>{
+  const E=req.user.empresa_id,b=req.body||{},cliente=String(b.clienteNombre||'').trim().slice(0,120),items=arr(b.items);
+  if(!cliente) return res.status(400).json({error:'Escribe el nombre del cliente'});
+  if(!items.length||items.length>100) return res.status(400).json({error:'Agrega entre 1 y 100 conceptos a la factura'});
+  const limpios=[];let subtotal=0;
+  for(const x of items){const descripcion=String(x&&x.descripcion||'').trim().slice(0,160),cantidad=num(x&&x.cantidad),precio=num(x&&x.precio);
+    if(!descripcion||!(cantidad>0)||precio<0)return res.status(400).json({error:'Revisa la descripción, cantidad y precio de cada concepto'});
+    const total=+(cantidad*precio).toFixed(2);subtotal+=total;limpios.push({descripcion,cantidad,precio,total});}
+  subtotal=+subtotal.toFixed(2);const impuesto=Math.max(0,num(b.impuesto)),total=+(subtotal+impuesto).toFixed(2);
+  const c=await getPool().getConnection();
+  try{await c.beginTransaction();const id=await siguienteIdContable(c,E,'factura');
+    const numero=(String(b.numero||'').trim().slice(0,50)||`INT-${new Date().getFullYear()}-${String(id).padStart(6,'0')}`);
+    await c.query('INSERT INTO facturas (empresa_id,id,numero,cliente_nombre,cliente_identidad,fecha,vence,subtotal,impuesto,total,estado,origen,referencia_id,items,notas) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [E,id,numero,cliente,String(b.clienteIdentidad||'').trim().slice(0,40),fechaContable(b.fecha),fechaContable(b.vence,true),subtotal,impuesto,total,b.emitir?'emitida':'borrador','manual',num(b.referenciaId)||null,JSON.stringify(limpios),String(b.notas||'').trim().slice(0,255)]);
+    await c.commit();res.status(201).json({ok:true,id,numero,total});
+  }catch(e){await c.rollback();if(e&&e.code==='ER_DUP_ENTRY')e=Object.assign(new Error('Ese número de factura ya existe'),{status:409});errorPublico(res,e);}finally{c.release();}
+});
+
+app.patch('/api/contabilidad/facturas/:id/estado', requireAuth, requireRole('admin'), async(req,res)=>{
+  const estado=String(req.body&&req.body.estado||'');
+  if(!['borrador','emitida','pagada','anulada'].includes(estado))return res.status(400).json({error:'Estado de factura inválido'});
+  try{const E=req.user.empresa_id,id=num(req.params.id);const [r]=await getPool().query('UPDATE facturas SET estado=? WHERE empresa_id=? AND id=?',[estado,E,id]);
+    if(!r.affectedRows)return res.status(404).json({error:'Factura no encontrada'});res.json({ok:true,estado});
+  }catch(e){errorPublico(res,e);}
 });
 
 /* Guardado dedicado para la galería. Evita enviar y reescribir todo el estado
@@ -1121,10 +1296,9 @@ app.post('/api/pedidos/checkout', limitarIntentos(20, 10 * 60 * 1000), requireAu
   const metodoPago = String((req.body && req.body.metodoPago) || '').slice(0, 40);
   const comprobante = String((req.body && req.body.comprobante) || '');
   const entregaSolicitada = obj(req.body && req.body.entrega);
-  const detallePago = obj(req.body && req.body.detallePago);
-  if (!['transferencia','tarjeta'].includes(metodoPago)) return res.status(400).json({ error: 'Selecciona un método de pago válido' });
+  if (metodoPago === 'tarjeta') return res.status(503).json({ error: 'Los pagos con tarjeta todavía no están habilitados. La tienda debe conectar primero una pasarela de pago real.' });
+  if (metodoPago !== 'transferencia') return res.status(400).json({ error: 'Selecciona un método de pago válido' });
   if (metodoPago === 'transferencia' && !comprobante) return res.status(400).json({ error: 'Falta el comprobante de transferencia' });
-  if (metodoPago === 'tarjeta' && detallePago.modo !== 'pendiente_pasarela') return res.status(400).json({ error: 'No se pudo validar la referencia de la tarjeta' });
   try { exigirImagenWeb(comprobante, 'Comprobante'); }
   catch (e) { return errorPublico(res, e); }
 
@@ -1132,15 +1306,16 @@ app.post('/api/pedidos/checkout', limitarIntentos(20, 10 * 60 * 1000), requireAu
   for (const it of items) {
     const empresaId = it && num(it.empresa_id);
     const productoId = it && num(it.producto_id);
+    const varianteId = it && String(it.varianteId || it.variante_id || '').slice(0,80);
     const cantidad = it && num(it.cantidad);
     if (!empresaId || !productoId || cantidad <= 0) {
       return res.status(400).json({ error: 'Item de carrito inválido: falta empresa_id, producto_id o cantidad' });
     }
     if (!porEmpresa.has(empresaId)) porEmpresa.set(empresaId, []);
     const grupo = porEmpresa.get(empresaId);
-    const repetido = grupo.find(x => x.producto_id === productoId);
+    const repetido = grupo.find(x => x.producto_id === productoId && x.varianteId === varianteId);
     if (repetido) repetido.cantidad += cantidad;
-    else grupo.push({ producto_id: productoId, cantidad });
+    else grupo.push({ producto_id: productoId, varianteId, cantidad });
   }
 
   const pool = getPool();
@@ -1163,10 +1338,8 @@ app.post('/api/pedidos/checkout', limitarIntentos(20, 10 * 60 * 1000), requireAu
     }
     { const vT = validarTelefono(telefonoEntrega, null, 'teléfono de entrega'); if (!vT.ok) { await c.rollback(); return res.status(400).json({ error: vT.error }); } }
     { const vD = validarDireccion(direccionEntrega, 'dirección de entrega'); if (!vD.ok) { await c.rollback(); return res.status(400).json({ error: vD.error }); } }
-    const pagoEstado = metodoPago === 'transferencia' ? 'en_revision' : 'pendiente_pasarela';
-    const pagoReferencia = metodoPago === 'tarjeta'
-      ? `${String(detallePago.marca || 'Tarjeta').slice(0,24)} •••• ${String(detallePago.ultimos4 || '').replace(/\D/g,'').slice(-4)}`
-      : '';
+    const pagoEstado = 'en_revision';
+    const pagoReferencia = '';
     const pedidosCreados = [];
 
     for (const [empresaId, itemsEmpresa] of porEmpresa) {
@@ -1175,16 +1348,20 @@ app.post('/api/pedidos/checkout', limitarIntentos(20, 10 * 60 * 1000), requireAu
 
       const productoIds = itemsEmpresa.map(it => it.producto_id);
       const [prodRows] = await c.query(
-        "SELECT id, nombre, precio_venta, stock, imagen, imagenes FROM productos WHERE empresa_id=? AND estado='activo' AND id IN (?) FOR UPDATE",
+        "SELECT id,nombre,categoria_id,precio_venta,stock,stock_inventario,imagen,imagenes,variantes FROM productos WHERE empresa_id=? AND estado='activo' AND id IN (?) FOR UPDATE",
         [empresaId, productoIds]);
-      const productos = new Map(prodRows.map(pr => [pr.id, { nombre: pr.nombre, precio: num(pr.precio_venta), stock: num(pr.stock), imagen: pr.imagen || arr(pr.imagenes)[0] || '' }]));
+      const [promos] = await c.query("SELECT * FROM promociones WHERE empresa_id=? AND estado='activo' AND inicia<=CURDATE() AND termina>=CURDATE()",[empresaId]);
+      const productos = new Map(prodRows.map(pr => [pr.id, pr]));
 
       const itemsCalc = itemsEmpresa.map(it => {
         if (!productos.has(it.producto_id)) return null;
-        const disponible = productos.get(it.producto_id);
-        if (it.cantidad > disponible.stock) return { errorStock: true, producto_id: it.producto_id, disponible: disponible.stock };
-        const precio = disponible.precio;
-        return { producto_id: it.producto_id, nombre: disponible.nombre, imagen: disponible.imagen, cantidad: it.cantidad, precio, subtotal: +(precio * it.cantidad).toFixed(2) };
+        const disponible = productos.get(it.producto_id), variantes=arr(disponible.variantes).filter(v=>v&&v.activo!==false);
+        let variante=null,stock=num(disponible.stock),base=num(disponible.precio_venta);
+        if(it.varianteId){variante=variantes.find(v=>String(v.id)===it.varianteId);if(!variante)return {errorVariante:true,producto_id:it.producto_id};stock=num(variante.stock);base=num(variante.precioVenta);}
+        else if(variantes.length)return {errorVariante:true,producto_id:it.producto_id};
+        if (it.cantidad > stock) return { errorStock: true, producto_id: it.producto_id, disponible: stock };
+        const calc=precioPromocional(disponible,base,it.cantidad,promos), precio=calc.precio;
+        return { producto_id: it.producto_id, varianteId:variante&&variante.id||'', varianteNombre:nombreVariantePublica(variante), nombre: disponible.nombre, imagen: disponible.imagen || arr(disponible.imagenes)[0] || '', cantidad: it.cantidad, precio, promocion:calc.promocion, subtotal: +(precio * it.cantidad).toFixed(2) };
       });
       if (itemsCalc.some(x => x === null)) {
         await c.rollback();
@@ -1195,6 +1372,7 @@ app.post('/api/pedidos/checkout', limitarIntentos(20, 10 * 60 * 1000), requireAu
         await c.rollback();
         return res.status(409).json({ error: `Stock insuficiente en "${emp.nombre}"`, producto_id: sinStock.producto_id, disponible: sinStock.disponible });
       }
+      if(itemsCalc.some(x=>x&&x.errorVariante)){await c.rollback();return res.status(409).json({error:`Selecciona una variante disponible en "${emp.nombre}"`});}
 
       const total = +itemsCalc.reduce((s, i) => s + i.subtotal, 0).toFixed(2);
 
@@ -1207,8 +1385,8 @@ app.post('/api/pedidos/checkout', limitarIntentos(20, 10 * 60 * 1000), requireAu
       await c.query('INSERT INTO pedidos (empresa_id,id,cliente_id,total,nota,fecha,estado,metodo_pago,pago_estado,pago_referencia,comprobante,destinatario,telefono_entrega,direccion_entrega) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         [empresaId, nid, req.user.id, total, nota, fecha, 'pendiente', metodoPago, pagoEstado, pagoReferencia, comprobante, destinatario, telefonoEntrega, direccionEntrega]);
       for (const it of itemsCalc)
-        await c.query('INSERT INTO pedido_items (empresa_id,pedido_id,producto_id,cantidad,precio,subtotal) VALUES (?,?,?,?,?,?)',
-          [empresaId, nid, it.producto_id, it.cantidad, it.precio, it.subtotal]);
+        await c.query('INSERT INTO pedido_items (empresa_id,pedido_id,producto_id,variante_id,variante_nombre,cantidad,precio,subtotal) VALUES (?,?,?,?,?,?,?,?)',
+          [empresaId, nid, it.producto_id, it.varianteId||null, it.varianteNombre||null, it.cantidad, it.precio, it.subtotal]);
 
       seq.pedido = nid;
       await c.query('UPDATE app_meta SET seq=?, version=version+1 WHERE empresa_id=?', [JSON.stringify(seq), empresaId]);
@@ -1249,14 +1427,14 @@ app.get('/api/mis-pedidos', requireAuth, requireRole('cliente','admin'), async (
     const mensajesPorPedido = new Map();
     for (const p of peds) {
       const [rows] = await pool.query(
-        `SELECT pi.producto_id,pi.cantidad,pi.precio,pi.subtotal,
+        `SELECT pi.producto_id,pi.variante_id,pi.variante_nombre,pi.cantidad,pi.precio,pi.subtotal,
                 COALESCE(pr.nombre, 'Producto no disponible') AS nombre,
                 COALESCE(pr.imagen, '') AS imagen, pr.imagenes
          FROM pedido_items pi
          LEFT JOIN productos pr ON pr.empresa_id=pi.empresa_id AND pr.id=pi.producto_id
          WHERE pi.empresa_id=? AND pi.pedido_id=?`, [p.empresa_id, p.id]);
       itemsPorPedido.set(`${p.empresa_id}:${p.id}`, rows.map(i => ({
-        producto_id: i.producto_id, nombre: i.nombre, imagen: i.imagen || arr(i.imagenes)[0] || '', cantidad: num(i.cantidad), precio: num(i.precio), subtotal: num(i.subtotal),
+        producto_id: i.producto_id, varianteId: i.variante_id || '', varianteNombre: i.variante_nombre || '', nombre: i.nombre, imagen: i.imagen || arr(i.imagenes)[0] || '', cantidad: num(i.cantidad), precio: num(i.precio), subtotal: num(i.subtotal),
       })));
       const [mensajes] = await pool.query(
         'SELECT id,autor,texto,fecha,leido FROM mensajes WHERE empresa_id=? AND pedido_id=? ORDER BY fecha ASC,id ASC',
@@ -1385,17 +1563,23 @@ app.patch('/api/pedidos/:pedidoId/estado', requireAuth, requireRole('admin'), as
 
     if (pedido.estado === 'pendiente' && destino === 'aprobado') {
       for (const it of items) {
-        const [[prod]] = await c.query('SELECT nombre,stock FROM productos WHERE empresa_id=? AND id=? FOR UPDATE', [E, it.producto_id]);
-        if (!prod || num(prod.stock) < num(it.cantidad)) {
+        const [[prod]] = await c.query('SELECT nombre,stock,variantes FROM productos WHERE empresa_id=? AND id=? FOR UPDATE', [E, it.producto_id]);
+        const variante=it.variante_id&&prod?arr(prod.variantes).find(v=>String(v.id)===String(it.variante_id)&&v.activo!==false):null;
+        const disponible=it.variante_id?(variante?num(variante.stock):0):(prod?num(prod.stock):0);
+        if (!prod || disponible < num(it.cantidad)) {
           await c.rollback();
           return res.status(409).json({ error: `Stock insuficiente para ${prod ? prod.nombre : 'un producto'}` });
         }
       }
       for (const it of items) {
-        await c.query('UPDATE productos SET stock=stock-? WHERE empresa_id=? AND id=?', [it.cantidad, E, it.producto_id]);
+        if(it.variante_id){
+          const [[prod]]=await c.query('SELECT variantes FROM productos WHERE empresa_id=? AND id=? FOR UPDATE',[E,it.producto_id]);
+          const variantes=arr(prod.variantes),v=variantes.find(x=>String(x.id)===String(it.variante_id));v.stock=num(v.stock)-num(it.cantidad);
+          await c.query('UPDATE productos SET variantes=?,stock=? WHERE empresa_id=? AND id=?',[JSON.stringify(variantes),variantes.reduce((s,x)=>s+num(x.stock),0),E,it.producto_id]);
+        }else await c.query('UPDATE productos SET stock=stock-? WHERE empresa_id=? AND id=?', [it.cantidad, E, it.producto_id]);
         seq.venta = num(seq.venta) + 1;
-        await c.query('INSERT INTO ventas (empresa_id,id,producto_id,cliente_id,cliente_nombre,cliente_identidad,pedido_id,estado,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-          [E, seq.venta, it.producto_id, pedido.cliente_id, (cliente && cliente.nombre) || '', '', pedidoId, 'activa', it.cantidad, it.precio, fecha, it.subtotal]);
+        await c.query('INSERT INTO ventas (empresa_id,id,producto_id,cliente_id,cliente_nombre,cliente_identidad,pedido_id,estado,variante_id,variante_nombre,metodo_pago,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [E, seq.venta, it.producto_id, pedido.cliente_id, (cliente && cliente.nombre) || '', '', pedidoId, 'activa',it.variante_id||null,it.variante_nombre||null,pedido.metodo_pago||'transferencia', it.cantidad, it.precio, fecha, it.subtotal]);
         seq.movimiento = num(seq.movimiento) + 1;
         await c.query('INSERT INTO movimientos (empresa_id,id,tipo,signo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?,?,?,?,?,?,?,?)',
           [E, seq.movimiento, 'salida', null, it.producto_id, it.cantidad, fecha, req.user.nombre, `Pedido #${pedidoId} aprobado`]);
@@ -1404,7 +1588,11 @@ app.patch('/api/pedidos/:pedidoId/estado', requireAuth, requireRole('admin'), as
 
     if (['aprobado','preparando','listo'].includes(pedido.estado) && destino === 'cancelado') {
       for (const it of items) {
-        await c.query('UPDATE productos SET stock=stock+? WHERE empresa_id=? AND id=?', [it.cantidad, E, it.producto_id]);
+        if(it.variante_id){
+          const [[prod]]=await c.query('SELECT variantes FROM productos WHERE empresa_id=? AND id=? FOR UPDATE',[E,it.producto_id]);
+          const variantes=arr(prod.variantes),v=variantes.find(x=>String(x.id)===String(it.variante_id));if(v)v.stock=num(v.stock)+num(it.cantidad);
+          await c.query('UPDATE productos SET variantes=?,stock=? WHERE empresa_id=? AND id=?',[JSON.stringify(variantes),variantes.reduce((s,x)=>s+num(x.stock),0),E,it.producto_id]);
+        }else await c.query('UPDATE productos SET stock=stock+? WHERE empresa_id=? AND id=?', [it.cantidad, E, it.producto_id]);
         seq.movimiento = num(seq.movimiento) + 1;
         await c.query('INSERT INTO movimientos (empresa_id,id,tipo,signo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?,?,?,?,?,?,?,?)',
           [E, seq.movimiento, 'entrada', null, it.producto_id, it.cantidad, fecha, req.user.nombre, `Reposición por cancelación del pedido #${pedidoId}`]);
@@ -1502,6 +1690,50 @@ app.post('/api/users', requireAuth, requireRole('admin'), async (req, res) => {
 });
 
 /* ───────── CATÁLOGO PÚBLICO (para navegar sin iniciar sesión) ───────── */
+/* Portada pública estable para compartir un producto. Las fotos viven como
+   data URL en MySQL; WhatsApp no puede leer una data URL incluida en el texto,
+   por eso esta ruta la sirve como una imagen HTTP real. */
+app.get('/api/catalog/product-image', async (req, res) => {
+  try {
+    const empresaId = await empresaIdDe(req.query.empresa);
+    const productoId = num(req.query.producto);
+    if (!empresaId || !productoId) return res.status(404).end();
+    const [[producto]] = await getPool().query("SELECT imagen,imagenes FROM productos WHERE empresa_id=? AND id=? AND estado='activo'", [empresaId, productoId]);
+    if (!producto) return res.status(404).end();
+    const src = producto.imagen || arr(producto.imagenes)[0] || '';
+    if (/^https:\/\//i.test(src)) return res.redirect(302, src);
+    const m = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(src);
+    if (!m) return res.status(404).end();
+    const contenido = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
+    if (!contenido.length || contenido.length > MAX_IMAGEN) return res.status(404).end();
+    res.set('Content-Type', m[1].toLowerCase());
+    res.set('Cache-Control', 'public, max-age=86400, immutable');
+    res.send(contenido);
+  } catch (e) { errorPublico(res, e); }
+});
+
+/* Página mínima con Open Graph. Al pegar este enlace en WhatsApp aparece la
+   fotografía, nombre y precio; al abrirlo redirige al detalle en SIWEPE. */
+app.get('/compartir/producto/:empresa/:producto', async (req, res) => {
+  try {
+    const empresaId = await empresaIdDe(req.params.empresa);
+    const productoId = num(req.params.producto);
+    if (!empresaId || !productoId) return res.status(404).send('Producto no encontrado');
+    const [[fila]] = await getPool().query(`SELECT p.id,p.nombre,p.descripcion,p.precio_venta,e.nombre empresa_nombre,e.slug
+      FROM productos p JOIN empresas e ON e.id=p.empresa_id
+      WHERE p.empresa_id=? AND p.id=? AND p.estado='activo' AND e.estado='activa'`, [empresaId, productoId]);
+    if (!fila) return res.status(404).send('Producto no encontrado');
+    const api = PUBLIC_API_URL.replace(/\/$/, '');
+    const site = SITE_URL.replace(/\/$/, '');
+    const ref = fila.slug || empresaId;
+    const imagen = `${api}/api/catalog/product-image?empresa=${encodeURIComponent(ref)}&producto=${productoId}`;
+    const destino = `${site}/pages/tienda.html?e=${encodeURIComponent(ref)}&producto=${productoId}`;
+    const titulo = `${fila.nombre} · ${fila.empresa_nombre}`;
+    const descripcion = `${fila.descripcion || 'Disponible en SIWEPE'} · L ${num(fila.precio_venta).toFixed(2)}`;
+    res.type('html').send(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escHtml(titulo)}</title><meta name="description" content="${escHtml(descripcion)}"><meta property="og:type" content="product"><meta property="og:title" content="${escHtml(titulo)}"><meta property="og:description" content="${escHtml(descripcion)}"><meta property="og:image" content="${escHtml(imagen)}"><meta property="og:url" content="${escHtml(`${api}${req.originalUrl}`)}"><meta name="twitter:card" content="summary_large_image"><meta http-equiv="refresh" content="0;url=${escHtml(destino)}"></head><body><p>Abriendo <a href="${escHtml(destino)}">${escHtml(fila.nombre)}</a> en SIWEPE…</p></body></html>`);
+  } catch (e) { errorPublico(res, e); }
+});
+
 app.get('/api/catalog', async (req, res) => {
   try {
     const empresaId = await empresaIdDe(req.query.empresa);
@@ -1514,6 +1746,7 @@ app.get('/api/catalog', async (req, res) => {
     const [[empresa]] = await pool.query("SELECT id,slug,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,contacto_publico,correo_publico,(SELECT ROUND(AVG(estrellas),1) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating,(SELECT COUNT(*) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating_count FROM empresas WHERE id=? AND estado='activa'", [empresaId]);
     const [cats] = await pool.query('SELECT * FROM categorias WHERE empresa_id=?', [empresaId]);
     const [prods] = await pool.query("SELECT * FROM productos WHERE empresa_id=? AND estado='activo'", [empresaId]);
+    const [promos] = await pool.query("SELECT id,nombre,tipo,valor,alcance,objetivos,cantidad_min,inicia,termina FROM promociones WHERE empresa_id=? AND estado='activo' AND inicia<=CURDATE() AND termina>=CURDATE()", [empresaId]);
     const c = cfg[0] || {};
     res.json({
       empresa_id: empresaId,
@@ -1522,7 +1755,12 @@ app.get('/api/catalog', async (req, res) => {
       categorias: cats,
       productos: prods.map(r => {
         const { precio_compra, stock_inventario, stock_min, publicado_alguna_vez, ...publico } = mapProducto(r);
-        return publico;
+        const promo=precioPromocional(r,publico.precio_venta,1,promos);
+        const variantes=arr(publico.variantes).filter(v=>v&&v.activo!==false).map(v=>{
+          const pv=precioPromocional(r,num(v.precioVenta),1,promos);
+          return {...v,precioCompra:undefined,stockInventario:undefined,stockMin:undefined,precioOriginal:num(v.precioVenta),precioVenta:pv.precio,promocion:pv.promocion};
+        });
+        return {...publico,precioOriginal:publico.precio_venta,precio_venta:promo.precio,promocion:promo.promocion,variantes};
       }),
     });
   } catch (e) { errorPublico(res, e); }
@@ -1535,7 +1773,8 @@ app.get('/api/catalog', async (req, res) => {
    para poder armar el link al perfil de esa tienda (GET /api/catalog?empresa=<slug>). */
 app.get('/api/marketplace', async (req, res) => {
   try {
-    const [rows] = await getPool().query(
+    const pool = getPool();
+    const [rows] = await pool.query(
       `SELECT productos.*, empresas.id AS emp_id, empresas.slug AS emp_slug,
               empresas.nombre AS emp_nombre, empresas.rubro AS emp_rubro,
               empresas.ciudad AS emp_ciudad, empresas.logo AS emp_logo,
@@ -1545,11 +1784,31 @@ app.get('/api/marketplace', async (req, res) => {
        JOIN config ON config.empresa_id = empresas.id
        WHERE empresas.estado = 'activa' AND productos.estado = 'activo'`
     );
+    const [promosRows] = await pool.query(
+      `SELECT * FROM promociones
+       WHERE estado='activo' AND inicia<=CURDATE() AND termina>=CURDATE()`
+    );
+    const promosPorEmpresa = new Map();
+    for (const promo of promosRows) {
+      const lista = promosPorEmpresa.get(Number(promo.empresa_id)) || [];
+      lista.push(promo);
+      promosPorEmpresa.set(Number(promo.empresa_id), lista);
+    }
     res.json({
       productos: rows.map(r => {
         const { precio_compra, stock_inventario, stock_min, publicado_alguna_vez, ...p } = mapProducto(r);
+        const promos = promosPorEmpresa.get(Number(r.emp_id)) || [];
+        const principal = precioPromocional(p, p.precio_venta, 1, promos);
+        const variantes = arr(p.variantes).filter(v => v && v.activo !== false).map(v => {
+          const pv = precioPromocional(p, v.precioVenta, 1, promos);
+          return {
+            id: String(v.id || ''), sku: String(v.sku || ''), atributos: v.atributos || {},
+            precioOriginal: num(v.precioVenta), precioVenta: pv.precio,
+            stock: num(v.stock), activo: true, promocion: pv.promocion,
+          };
+        });
         return {
-          ...p,
+          ...p, variantes, precioOriginal: num(p.precio_venta), precio_venta: principal.precio, promocion: principal.promocion,
           empresa: {
             id: r.emp_id, slug: r.emp_slug, nombre: r.emp_nombre,
             rubro: r.emp_rubro || '', ciudad: r.emp_ciudad || '', logo: r.emp_logo || '', moneda: r.emp_moneda || 'L',
@@ -1565,7 +1824,7 @@ function mapPedidos(peds, items) {
     id: p.id, cliente_id: p.cliente_id, total: num(p.total), nota: p.nota || '', fecha: p.fecha,
     estado: p.estado, metodoPago: p.metodo_pago || '', pagoEstado:p.pago_estado||'pendiente', pagoReferencia:p.pago_referencia||'', comprobante: p.comprobante || '',
     destinatario: p.destinatario || '', telefonoEntrega: p.telefono_entrega || '', direccionEntrega: p.direccion_entrega || '',
-    items: items.filter(i => i.pedido_id === p.id).map(i => ({ producto_id: i.producto_id, cantidad: num(i.cantidad), precio: num(i.precio), subtotal: num(i.subtotal) })),
+    items: items.filter(i => i.pedido_id === p.id).map(i => ({ producto_id: i.producto_id, varianteId:i.variante_id||'', varianteNombre:i.variante_nombre||'', cantidad: num(i.cantidad), precio: num(i.precio), subtotal: num(i.subtotal) })),
   }));
 }
 
@@ -1698,14 +1957,14 @@ async function guardarEstadoCompleto(c, E, db) {
     for (const x of db.productos || []) {
       const imagenes=arr(x.imagenes).filter(Boolean).slice(0,6);
       const portada=x.imagen||imagenes[0]||'';
-      await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_inventario,stock_min,imagen,imagenes,estado,destacado,publicado_alguna_vez,marca,tipo_piel) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [E, x.id, String(x.codigo||'').slice(0,40), String(x.nombre||'').slice(0,120), x.categoria_id || null, String(x.descripcion||''), num(x.precio_compra), num(x.precio_venta), num(x.stock), num(x.stock_inventario), num(x.stock_min), portada, JSON.stringify(imagenes), x.estado || 'activo', x.destacado ? 1 : 0, x.publicado_alguna_vez ? 1 : 0, String(x.marca||'').slice(0,80), JSON.stringify(x.tipoPiel || [])]);
+      await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_inventario,stock_min,imagen,imagenes,estado,destacado,publicado_alguna_vez,marca,tipo_piel,codigo_barras,variantes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [E, x.id, String(x.codigo||'').slice(0,40), String(x.nombre||'').slice(0,120), x.categoria_id || null, String(x.descripcion||''), num(x.precio_compra), num(x.precio_venta), num(x.stock), num(x.stock_inventario), num(x.stock_min), portada, JSON.stringify(imagenes), x.estado || 'activo', x.destacado ? 1 : 0, x.publicado_alguna_vez ? 1 : 0, String(x.marca||'').slice(0,80), JSON.stringify(x.tipoPiel || []), String(x.codigoBarras||'').slice(0,96)||null, JSON.stringify(arr(x.variantes))]);
     }
     for (const x of db.compras || [])
       await c.query('INSERT INTO compras (empresa_id,id,producto_id,proveedor_id,cantidad,precio,fecha,obs) VALUES (?,?,?,?,?,?,?,?)', [E, x.id, x.producto_id || null, x.proveedor_id || null, num(x.cantidad), num(x.precio), x.fecha, x.obs || '']);
     for (const x of db.ventas || [])
-      await c.query('INSERT INTO ventas (empresa_id,id,producto_id,cliente_id,cliente_nombre,cliente_identidad,pedido_id,estado,origen_stock,stock_tienda_usado,stock_inventario_usado,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [E, x.id, x.producto_id || null, x.cliente_id || null, x.cliente_nombre || '', x.cliente_identidad || '', x.pedido_id || null, x.estado || 'activa', x.origen_stock || 'tienda', num(x.stock_tienda_usado == null ? x.cantidad : x.stock_tienda_usado), num(x.stock_inventario_usado), num(x.cantidad), num(x.precio), x.fecha, +(num(x.cantidad) * num(x.precio)).toFixed(2)]);
+      await c.query('INSERT INTO ventas (empresa_id,id,producto_id,cliente_id,cliente_nombre,cliente_identidad,pedido_id,estado,origen_stock,stock_tienda_usado,stock_inventario_usado,ticket,variante_id,variante_nombre,metodo_pago,turno_caja_id,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [E, x.id, x.producto_id || null, x.cliente_id || null, x.cliente_nombre || '', x.cliente_identidad || '', x.pedido_id || null, x.estado || 'activa', x.origen_stock || 'tienda', num(x.stock_tienda_usado == null ? x.cantidad : x.stock_tienda_usado), num(x.stock_inventario_usado), x.ticket||null, x.variante_id||null, x.variante_nombre||null, x.metodo_pago||'efectivo', x.turno_caja_id||null, num(x.cantidad), num(x.precio), x.fecha, +(num(x.cantidad) * num(x.precio)).toFixed(2)]);
     for (const x of db.movimientos || [])
       await c.query('INSERT INTO movimientos (empresa_id,id,tipo,signo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?,?,?,?,?,?,?,?)', [E, x.id, x.tipo, x.signo || null, x.producto_id || null, num(x.cantidad), x.fecha, x.usuario || '', x.obs || '']);
     for (const p of db.pedidos || []) {
@@ -1713,7 +1972,7 @@ async function guardarEstadoCompleto(c, E, db) {
       const totalPedido = itemsPedido.reduce((s, it) => s + num(it.cantidad) * num(it.precio), 0);
       await c.query('INSERT INTO pedidos (empresa_id,id,cliente_id,total,nota,fecha,estado,metodo_pago,pago_estado,pago_referencia,comprobante,destinatario,telefono_entrega,direccion_entrega) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [E, p.id, p.cliente_id || null, +totalPedido.toFixed(2), String(p.nota || '').slice(0, 500), p.fecha, p.estado || 'pendiente', p.metodoPago || '', p.pagoEstado||'pendiente', p.pagoReferencia||'', p.comprobante || '', p.destinatario || '', p.telefonoEntrega || '', p.direccionEntrega || '']);
       for (const it of itemsPedido)
-        await c.query('INSERT INTO pedido_items (empresa_id,pedido_id,producto_id,cantidad,precio,subtotal) VALUES (?,?,?,?,?,?)', [E, p.id, it.producto_id || null, num(it.cantidad), num(it.precio), +(num(it.cantidad) * num(it.precio)).toFixed(2)]);
+        await c.query('INSERT INTO pedido_items (empresa_id,pedido_id,producto_id,variante_id,variante_nombre,cantidad,precio,subtotal) VALUES (?,?,?,?,?,?,?,?)', [E, p.id, it.producto_id || null, it.varianteId||null, String(it.varianteNombre||'').slice(0,180)||null, num(it.cantidad), num(it.precio), +(num(it.cantidad) * num(it.precio)).toFixed(2)]);
     }
     for (const m of db.mensajes || [])
       await c.query('INSERT INTO mensajes (empresa_id,id,pedido_id,autor,texto,fecha,leido) VALUES (?,?,?,?,?,?,?)', [E, m.id, m.pedido_id, m.autor, m.texto, dtMysql(m.fecha), m.leido ? 1 : 0]);

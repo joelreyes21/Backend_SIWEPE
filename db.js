@@ -244,6 +244,25 @@ async function _migrarSuperAdmin(pool) {
   if (!c.length) await pool.query("ALTER TABLE users ADD COLUMN super_admin TINYINT NOT NULL DEFAULT 0 AFTER role");
 }
 
+/* Operación comercial 2026: variantes y trazabilidad del POS. Las tablas
+   nuevas se crean desde schema.sql; estas columnas se añaden a instalaciones
+   existentes porque CREATE TABLE IF NOT EXISTS no modifica su estructura. */
+async function _migrarOperacionComercial(pool) {
+  async function columna(tabla, nombre, sql) {
+    const [c] = await pool.query(`SHOW COLUMNS FROM \`${tabla}\` LIKE ?`, [nombre]);
+    if (!c.length) await pool.query(`ALTER TABLE \`${tabla}\` ADD COLUMN ${sql}`);
+  }
+  await columna('productos','codigo_barras','codigo_barras VARCHAR(96) NULL AFTER tipo_piel');
+  await columna('productos','variantes','variantes JSON NULL AFTER codigo_barras');
+  await columna('ventas','ticket','ticket VARCHAR(50) NULL AFTER stock_inventario_usado');
+  await columna('ventas','variante_id','variante_id VARCHAR(80) NULL AFTER ticket');
+  await columna('ventas','variante_nombre','variante_nombre VARCHAR(180) NULL AFTER variante_id');
+  await columna('ventas','metodo_pago',"metodo_pago VARCHAR(24) NOT NULL DEFAULT 'efectivo' AFTER variante_nombre");
+  await columna('ventas','turno_caja_id','turno_caja_id INT NULL AFTER metodo_pago');
+  await columna('pedido_items','variante_id','variante_id VARCHAR(80) NULL AFTER producto_id');
+  await columna('pedido_items','variante_nombre','variante_nombre VARCHAR(180) NULL AFTER variante_id');
+}
+
 async function initDb(reintentos = 6) {
   let ultimoError;
   for (let i = 1; i <= reintentos; i++) {
@@ -272,6 +291,7 @@ async function initDb(reintentos = 6) {
       await _migrarOrigenProveedores(pool);
       await _migrarEntregaPedidos(pool);
       await _migrarSuperAdmin(pool);
+      await _migrarOperacionComercial(pool);
       console.log(`MySQL conectado: ${CFG.user}@${CFG.host}:${CFG.port}/${CFG.database}`);
       return pool;
     } catch (e) {

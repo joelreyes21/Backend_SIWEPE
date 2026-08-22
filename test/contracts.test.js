@@ -74,7 +74,7 @@ test('los flujos principales conservan navegación y controles responsive', () =
   assert.match(tiendaCss, /grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(adminCss, /\.modal-overlay\{align-items:flex-end;padding:0/);
   assert.match(adminCss, /\.table-wrap table\{min-width:680px/);
-  assert.match(plataformaCss, /\.nav-btn\.ghost\{display:inline-flex!important\}/);
+  assert.match(plataformaCss, /\.nav-btn\.ghost\{display:none!important\}/);
   assert.match(tiendaHtml, /orientation:landscape/);
 });
 
@@ -162,7 +162,10 @@ test('carrito, checkout, confirmación y gestión de pedidos forman un flujo com
   assert.match(data,/SIWEPE_CART_KEY/);
   assert.match(data,/empresa_id:Number\(x\.empresa_id\)/);
   assert.match(cart,/siwepeCart\.update/);
-  assert.match(checkout,/entrega,detallePago/);
+  assert.match(checkout,/comprobante:metodo==='transferencia'\?proof:'',entrega/);
+  assert.doesNotMatch(leer(path.join(front,'pages','checkout.html')),/value="tarjeta"/);
+  assert.match(leer(path.join(front,'pages','checkout.html')),/Transferencia bancaria/);
+  assert.match(server,/Los pagos con tarjeta todavía no están habilitados/);
   assert.match(checkout,/siwepeCart\.clearEmpresa/);
   assert.match(server,/pago_estado/);
   assert.match(server,/preparando','listo','enviado/);
@@ -342,6 +345,8 @@ test('la navegación del panel queda vinculada antes de cualquier retorno del lo
 
 test('la portada renovada ofrece categorías, footer completo y países ampliados', () => {
   const index=leer(path.join(front, 'index.html'));
+  const quienes=leer(path.join(pages,'quienes-somos.html'));
+  const platformCss=leer(path.join(front,'assets','css','platform.css'));
   assert.match(index,/class="home-category-grid"/);
   assert.match(index,/class="mega-footer footer"/);
   assert.match(index,/Ropa y calzado/);
@@ -349,6 +354,8 @@ test('la portada renovada ofrece categorías, footer completo y países ampliado
   assert.match(index,/Argentina/);
   assert.match(index,/Alemania/);
   assert.doesNotMatch(index,/Una base seria para vender y crecer/);
+  assert.match(platformCss,/@media \(max-width:640px\)[\s\S]*\.nav-btn\.ghost\{display:none!important\}/);
+  assert.match(quienes,/platform\.css\?v=20260821\.1/);
 });
 
 test('los scripts inline de las páginas tienen sintaxis válida', () => {
@@ -367,4 +374,137 @@ test('los recursos locales referenciados por las páginas existen', () => {
       .map(x => x.split(/[?#]/)[0]).filter(Boolean);
     for (const ref of refs) assert.equal(fs.existsSync(path.resolve(carpetaDe(nombre), ref)), true, `${nombre}: falta ${ref}`);
   }
+});
+
+test('los accesos muestran el aviso de atajo bloqueado sin tratarlo como seguridad', () => {
+  const guardia=leer(path.join(front,'assets','js','shared','noinspect.js'));
+  for (const nombre of ['admin.html','tienda.html','superadmin.html']) {
+    const html=leer(path.join(pages,nombre));
+    assert.match(html,/shared\/noinspect\.js/,`${nombre}: falta la ayuda de acceso`);
+  }
+  assert.match(guardia,/tecla==='f12'/);
+  assert.match(guardia,/Acción bloqueada en esta pantalla/);
+  assert.match(guardia,/no se considera una frontera de seguridad/i);
+});
+
+test('el centro legal publica todas las políticas y está enlazado en la compra', () => {
+  const legal=leer(path.join(pages,'terminos.html'));
+  const checkout=leer(path.join(pages,'checkout.html'));
+  for (const id of ['terminos','privacidad','cookies','envios','comercios']) {
+    assert.match(legal,new RegExp(`data-policy="${id}"`),`falta política ${id}`);
+  }
+  assert.match(legal,/21 de agosto de 2026/);
+  assert.match(legal,/profesional local debe adaptar estas políticas/i);
+  assert.match(checkout,/terminos\.html#envios/);
+});
+
+test('el frontend no conserva copias temporales de FUSE', () => {
+  const temporales=[];
+  function caminar(dir){
+    for(const entrada of fs.readdirSync(dir,{withFileTypes:true})){
+      const ruta=path.join(dir,entrada.name);
+      if(entrada.isDirectory()&&entrada.name!=='.git') caminar(ruta);
+      else if(entrada.name.startsWith('.fuse_hidden')) temporales.push(ruta);
+    }
+  }
+  caminar(front);
+  assert.deepEqual(temporales,[]);
+  assert.match(leer(path.join(front,'.gitignore')),/\.fuse_hidden\*/);
+});
+
+test('el centro contable conecta ingresos, gastos, cuentas y facturas sin presentarse como factura fiscal', () => {
+  const schema=leer(path.join(raiz,'schema.sql'));
+  const server=leer(path.join(raiz,'server.js'));
+  const adminHtml=leer(path.join(pages,'admin.html'));
+  const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
+  const adminCss=leer(path.join(front,'assets','css','admin.css'));
+  for(const tabla of ['gastos','cuentas_pagar','pagos_cuenta_pagar','facturas']) assert.match(schema,new RegExp(`CREATE TABLE IF NOT EXISTS ${tabla}`,'i'));
+  assert.match(server,/app\.get\('\/api\/contabilidad'/);
+  assert.match(server,/app\.post\('\/api\/contabilidad\/gastos'/);
+  assert.match(server,/app\.post\('\/api\/contabilidad\/cuentas-pagar'/);
+  assert.match(server,/app\.post\('\/api\/contabilidad\/facturas'/);
+  assert.match(server,/no sustituy(?:e|en) una factura fiscal autorizada/i);
+  assert.match(adminHtml,/data-page="contabilidad"/);
+  assert.match(adminHtml,/data-page="cuentas-cobrar"[\s\S]*Cuentas por cobrar/);
+  assert.match(adminHtml,/data-page="cuentas-pagar"[\s\S]*Cuentas por pagar/);
+  assert.match(adminHtml,/data-page="contabilidad"[\s\S]*Resumen contable/);
+  assert.doesNotMatch(adminHtml,/>\s*Fiado\s*</i);
+  assert.match(adminHtml,/id="page-contabilidad"/);
+  assert.match(adminHtml,/Control operativo, no declaración fiscal/i);
+  assert.match(adminMain,/function renderContabilidad/);
+  assert.match(adminMain,/function openFormGasto/);
+  assert.match(adminMain,/function openFormCuentaPagar/);
+  assert.match(adminMain,/function openFormFactura/);
+  assert.match(adminMain,/dataset\.accountingSection=view/);
+  assert.match(adminMain,/Documento de control interno/i);
+  assert.match(adminCss,/\.accounting-kpis\{display:grid/);
+  assert.match(adminCss,/data-accounting-section="pagar"[\s\S]*#176254/);
+  assert.match(adminCss,/@media\(max-width:620px\)[\s\S]*\.accounting-kpis\{grid-template-columns:1fr\}/);
+});
+
+test('cuentas por cobrar toma productos y la tienda comparte compras por WhatsApp con imagen pública', () => {
+  const server=leer(path.join(raiz,'server.js'));
+  const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
+  const tiendaMain=leer(path.join(front,'assets','js','tienda','main.js'));
+  const tiendaCss=leer(path.join(front,'assets','css','tienda.css'));
+  assert.match(adminMain,/comboField\('ff-cat','Categoría'/);
+  assert.match(adminMain,/comboField\('ff-prod','Producto'/);
+  assert.match(adminMain,/Crear un producto nuevo/);
+  assert.match(adminMain,/producto\.dataset\.precio/);
+  assert.match(adminMain,/precioVacioEnCero\('ff-monto'\)/);
+  assert.match(tiendaMain,/function comprarWhatsAppT/);
+  assert.match(tiendaMain,/https:\/\/wa\.me\//);
+  assert.match(tiendaMain,/Ver producto e imagen/);
+  assert.match(tiendaMain,/tpd-whatsapp-btn/);
+  assert.match(tiendaCss,/\.tpd-whatsapp-btn\{/);
+  assert.match(server,/app\.get\('\/api\/catalog\/product-image'/);
+  assert.match(server,/app\.get\('\/compartir\/producto\/:empresa\/:producto'/);
+  assert.match(server,/property="og:image"/);
+});
+
+test('operación comercial integra caja, POS, variantes, promociones e importación sin pasarela externa', () => {
+  const schema=leer(path.join(raiz,'schema.sql'));
+  const server=leer(path.join(raiz,'server.js'));
+  const operaciones=leer(path.join(raiz,'operaciones.js'));
+  const adminHtml=leer(path.join(front,'pages','admin.html'));
+  const adminOps=leer(path.join(front,'assets','js','admin','operations.js'));
+  for(const tabla of ['turnos_caja','movimientos_caja','promociones']) assert.match(schema,new RegExp(`CREATE TABLE IF NOT EXISTS ${tabla}`,'i'));
+  assert.match(schema,/codigo_barras\s+VARCHAR/i);
+  assert.match(schema,/variantes\s+JSON/i);
+  assert.match(operaciones,/router\.post\('\/caja\/abrir'/);
+  assert.match(operaciones,/router\.post\('\/pos\/ventas'/);
+  assert.match(operaciones,/router\.post\('\/importaciones\/productos\/preview'/);
+  assert.match(operaciones,/router\.post\('\/promociones'/);
+  assert.match(adminHtml,/data-page="caja"/);
+  assert.match(adminHtml,/data-page="pos"/);
+  assert.match(adminHtml,/data-page="promociones"/);
+  assert.match(adminOps,/CODE128_PATTERNS/);
+  assert.doesNotMatch(adminHtml,/data-value="tarjeta"/);
+  assert.match(server,/precioPromocional/);
+});
+
+test('recordatorios internos y módulo gastronómico comparten caja e inventario', () => {
+  const schema=leer(path.join(raiz,'schema.sql'));
+  const operaciones=leer(path.join(raiz,'operaciones.js'));
+  const adminHtml=leer(path.join(front,'pages','admin.html'));
+  for(const tabla of ['notificacion_lecturas','mesas','comandas','comanda_items']) assert.match(schema,new RegExp(`CREATE TABLE IF NOT EXISTS ${tabla}`,'i'));
+  assert.match(operaciones,/router\.get\('\/notificaciones'/);
+  assert.match(operaciones,/router\.post\('\/gastronomia\/comandas'/);
+  assert.match(operaciones,/router\.post\('\/gastronomia\/comandas\/:id\/cerrar'/);
+  assert.match(adminHtml,/data-page="gastronomia"/);
+  assert.match(adminHtml,/Recordatorios de cobro/);
+  assert.doesNotMatch(operaciones,/twilio|whatsapp|sendgrid/i);
+});
+
+test('carrito y checkout conservan la variante y el marketplace oculta costos internos', () => {
+  const server=leer(path.join(raiz,'server.js'));
+  const data=leer(path.join(front,'assets','js','shared','data.js'));
+  const cart=leer(path.join(front,'assets','js','commerce','cart.js'));
+  const checkout=leer(path.join(front,'assets','js','commerce','checkout.js'));
+  assert.match(data,/variante_id:String/);
+  assert.match(cart,/variante_nombre/);
+  assert.match(checkout,/varianteId:x\.variante_id/);
+  assert.match(server,/precioCompra:undefined/);
+  assert.match(server,/stockInventario:undefined/);
+  assert.match(server,/variante_id,pi\.variante_nombre/);
 });
