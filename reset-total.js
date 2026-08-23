@@ -17,11 +17,26 @@ const { initDb, getPool } = require('./db');
 const { hashPassword } = require('./auth');
 
 // Orden de borrado: primero las tablas hijas, luego las padre (por si hubiera FKs).
+// (Igual se corre con FOREIGN_KEY_CHECKS=0, así que el orden no es crítico.)
+// IMPORTANTE: debe incluir TODAS las tablas del schema.sql; si falta alguna,
+// quedarían datos huérfanos y sus IDs no se reiniciarían.
 const TABLAS = [
-  'mensajes', 'pedido_items', 'pedidos', 'movimientos', 'ventas', 'compras',
-  'abonos', 'creditos', 'calificaciones',
-  'productos', 'clientes_empresa', 'proveedores', 'categorias', 'config',
+  // pedidos / mensajería
+  'mensajes', 'pedido_items', 'pedidos',
+  // restaurante / comandas / mesas
+  'comanda_items', 'comandas', 'mesas',
+  // caja / turnos / finanzas
+  'movimientos_caja', 'turnos_caja', 'gastos',
+  'pagos_cuenta_pagar', 'cuentas_pagar', 'facturas',
+  // inventario / ventas / compras / crédito
+  'movimientos', 'ventas', 'compras', 'abonos', 'creditos',
+  'promociones', 'productos',
+  // catálogo / relaciones
+  'calificaciones', 'notificacion_lecturas',
+  'clientes_empresa', 'proveedores', 'categorias', 'config',
+  // meta / auth / registro
   'app_meta', 'registros_pendientes', 'password_resets', 'onboarding_sessions',
+  // raíz
   'empresas', 'users',
 ];
 
