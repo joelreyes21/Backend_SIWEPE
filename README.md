@@ -30,6 +30,7 @@ El código ya está preparado para Railway: `db.js` detecta solo las variables `
    | `CORS_ORIGINS` | el/los dominios reales del frontend, separados por coma |
    | `SITE_URL` | la URL pública del frontend (a donde redirige tras verificar correo o resetear contraseña) |
    | `PUBLIC_API_URL` | la URL pública que Railway le da a este servicio (para armar el link de verificación de correo) |
+   | `SHARE_BASE_URL` | dominio público para tarjetas dinámicas de producto, por ejemplo `https://share.siwepe.shop` |
    | `RESEND_API_KEY` | opcional — sin esto, el link de verificación solo queda en los logs, no se manda correo real |
    | `MAIL_FROM` | opcional, remitente de los correos |
 

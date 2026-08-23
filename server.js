@@ -234,6 +234,7 @@ const crypto = require('crypto');
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || `http://localhost:${PORT}`;
 const SITE_URL = process.env.SITE_URL || 'https://siwepe.shop';
+const SHARE_BASE_URL = process.env.SHARE_BASE_URL || PUBLIC_API_URL;
 const slugify = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'empresa';
 
 /* Heurística anti-"aporreo de teclado": detecta nombres CLARAMENTE aleatorios
@@ -1736,18 +1737,22 @@ app.get('/compartir/producto/:empresa/:producto', async (req, res) => {
     const empresaId = await empresaIdDe(req.params.empresa);
     const productoId = num(req.params.producto);
     if (!empresaId || !productoId) return res.status(404).send('Producto no encontrado');
-    const [[fila]] = await getPool().query(`SELECT p.id,p.nombre,p.descripcion,p.precio_venta,e.nombre empresa_nombre,e.slug
+    const [[fila]] = await getPool().query(`SELECT p.id,p.nombre,p.descripcion,p.precio_venta,p.imagen,p.imagenes,e.nombre empresa_nombre,e.slug
       FROM productos p JOIN empresas e ON e.id=p.empresa_id
       WHERE p.empresa_id=? AND p.id=? AND p.estado='activo' AND e.estado='activa'`, [empresaId, productoId]);
     if (!fila) return res.status(404).send('Producto no encontrado');
-    const api = PUBLIC_API_URL.replace(/\/$/, '');
+    const share = SHARE_BASE_URL.replace(/\/$/, '');
     const site = SITE_URL.replace(/\/$/, '');
     const ref = fila.slug || empresaId;
-    const imagen = `${api}/api/catalog/product-image?empresa=${encodeURIComponent(ref)}&producto=${productoId}`;
+    const portada = fila.imagen || arr(fila.imagenes)[0] || '';
+    const imagen = /^https:\/\/img\.siwepe\.shop\//i.test(portada)
+      ? portada
+      : `${share}/api/catalog/product-image?empresa=${encodeURIComponent(ref)}&producto=${productoId}`;
     const destino = `${site}/pages/tienda.html?e=${encodeURIComponent(ref)}&producto=${productoId}`;
     const titulo = `${fila.nombre} · ${fila.empresa_nombre}`;
     const descripcion = `${fila.descripcion || 'Disponible en SIWEPE'} · L ${num(fila.precio_venta).toFixed(2)}`;
-    res.type('html').send(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escHtml(titulo)}</title><meta name="description" content="${escHtml(descripcion)}"><meta property="og:type" content="product"><meta property="og:title" content="${escHtml(titulo)}"><meta property="og:description" content="${escHtml(descripcion)}"><meta property="og:image" content="${escHtml(imagen)}"><meta property="og:url" content="${escHtml(`${api}${req.originalUrl}`)}"><meta name="twitter:card" content="summary_large_image"><meta http-equiv="refresh" content="0;url=${escHtml(destino)}"></head><body><p>Abriendo <a href="${escHtml(destino)}">${escHtml(fila.nombre)}</a> en SIWEPE…</p></body></html>`);
+    res.set('Cache-Control', 'public, max-age=300, s-maxage=300');
+    res.type('html').send(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escHtml(titulo)}</title><meta name="description" content="${escHtml(descripcion)}"><meta property="og:type" content="product"><meta property="og:title" content="${escHtml(titulo)}"><meta property="og:description" content="${escHtml(descripcion)}"><meta property="og:image" content="${escHtml(imagen)}"><meta property="og:image:alt" content="${escHtml(fila.nombre)}"><meta property="og:url" content="${escHtml(`${share}${req.originalUrl}`)}"><meta name="twitter:card" content="summary_large_image"><meta http-equiv="refresh" content="0;url=${escHtml(destino)}"></head><body><p>Abriendo <a href="${escHtml(destino)}">${escHtml(fila.nombre)}</a> en SIWEPE…</p></body></html>`);
   } catch (e) { errorPublico(res, e); }
 });
 

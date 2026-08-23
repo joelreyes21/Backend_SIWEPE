@@ -457,10 +457,13 @@ test('cuentas por cobrar toma productos y la tienda comparte compras por WhatsAp
   assert.match(tiendaMain,/Ver producto:/);
   assert.match(tiendaMain,/Ver imagen:/);
   assert.match(tiendaMain,/img\\\.siwepe\\\.shop/);
+  assert.match(tiendaMain,/https:\/\/share\.siwepe\.shop\/compartir\/producto/);
   assert.doesNotMatch(tiendaMain,/API_BASE}\/compartir\/producto/);
   assert.match(tiendaMain,/tpd-whatsapp-btn/);
   assert.match(tiendaCss,/\.tpd-whatsapp-btn\{/);
   assert.match(server,/app\.get\('\/api\/catalog\/product-image'/);
+  assert.match(server,/const SHARE_BASE_URL = process\.env\.SHARE_BASE_URL/);
+  assert.match(server,/\^https:\\\/\\\/img\\\.siwepe\\\.shop/);
   assert.match(server,/app\.get\('\/compartir\/producto\/:empresa\/:producto'/);
   assert.match(server,/property="og:image"/);
 });
