@@ -16,6 +16,7 @@ test('la validación de imágenes rechaza SVG y esquemas ejecutables', () => {
   assert.equal(imagenWebValida('data:image/png;base64,aGVsbG8='), true);
   assert.equal(imagenWebValida('data:image/svg+xml;base64,PHN2Zz4='), false);
   assert.equal(imagenWebValida('javascript:alert(1)'), false);
+  assert.equal(imagenWebValida(`data:image/jpeg;base64,${Buffer.alloc(4*1024*1024+1).toString('base64')}`), false);
 });
 
 test('el catálogo público no devuelve costo ni stock mínimo', () => {
@@ -329,8 +330,8 @@ test('la galería aplica límites de cantidad y peso en cliente y servidor', () 
   assert.match(server,/galeria\.length>12/);
   assert.match(server,/22\*1024\*1024/);
   assert.match(adminHtml,/Hasta 12 fotos/);
-  assert.match(adminHtml,/6 MB/);
-  assert.match(adminMain,/file\.size>6\*1024\*1024/);
+  assert.match(adminHtml,/4 MB/);
+  assert.match(adminMain,/file\.size>4\*1024\*1024/);
   assert.match(adminMain,/pesoEstimado>20\*1024\*1024/);
 });
 

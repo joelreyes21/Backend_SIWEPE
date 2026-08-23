@@ -78,16 +78,20 @@ const arr = (v) => { const x=jsonValor(v, []); return Array.isArray(x) ? x : [];
 const obj = (v) => { const x=jsonValor(v, {}); return x && typeof x==='object' && !Array.isArray(x) ? x : {}; };
 const dtMysql = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toISOString().slice(0, 19).replace('T', ' '); };
 const escHtml = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-const MAX_IMAGEN = 8 * 1024 * 1024;
+const MAX_IMAGEN_BYTES = 4 * 1024 * 1024;
 function imagenWebValida(v) {
   if (v == null || v === '') return true;
-  if (typeof v !== 'string' || v.length > MAX_IMAGEN) return false;
-  if (/^https:\/\/[a-z0-9.-]+(?:[:/][^\s"'<>]*)?$/i.test(v)) return true;
-  return /^data:image\/(?:png|jpe?g|webp|gif);base64,[a-z0-9+/=\r\n]+$/i.test(v);
+  if (typeof v !== 'string') return false;
+  if (/^https:\/\/[a-z0-9.-]+(?:[:/][^\s"'<>]*)?$/i.test(v)) return v.length <= 4096;
+  const m=/^data:image\/(?:png|jpe?g|webp|gif);base64,([a-z0-9+/=\r\n]+)$/i.exec(v);
+  if(!m) return false;
+  const base64=m[1].replace(/\s/g,'');
+  const relleno=(base64.match(/=+$/)||[''])[0].length;
+  return Math.max(0,Math.floor(base64.length*3/4)-relleno)<=MAX_IMAGEN_BYTES;
 }
 function exigirImagenWeb(v, campo) {
   if (!imagenWebValida(v)) {
-    const e = new Error(`${campo || 'Imagen'} inválida. Usa JPG, PNG, WEBP o GIF de hasta 8 MB.`);
+    const e = new Error(`${campo || 'Imagen'} inválida. Usa JPG, PNG, WEBP o GIF de hasta 4 MB.`);
     e.status = 400;
     throw e;
   }

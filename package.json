@@ -23,7 +23,8 @@
     "multer": "^2.2.0",
     "mysql2": "^3.11.5",
     "read-excel-file": "^9.3.10",
-    "resend": "^4.8.0"
+    "resend": "^4.8.0",
+    "sharp": "^0.35.3"
   },
   "author": "Joel Reyes",
   "license": "UNLICENSED",
