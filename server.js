@@ -8,6 +8,7 @@ const rateLimit = require('express-rate-limit');
 const { initDb, getPool } = require('./db');
 const { hashPassword, checkPassword, signToken, requireAuth, requireRole, requireSuper } = require('./auth');
 const operacionesRouter = require('./operaciones');
+const { configuracion: configuracionR2, persistirImagenWeb, probarConexionR2 } = require('./media');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -53,6 +54,18 @@ app.use('/api', operacionesRouter);
 
 /* Este servidor es SOLO API (el front-end se hostea aparte). */
 app.get('/', (req, res) => res.json({ ok: true, service: 'SIWEPE API', ts: new Date().toISOString() }));
+
+/* Diagnóstico sin secretos para comprobar desde el panel que Railway puede
+   escribir y borrar en el bucket asignado. El archivo de prueba se elimina
+   inmediatamente y la ruta exige una sesión administrativa real. */
+app.get('/api/media/r2/estado', requireAuth, requireRole('admin'), (req, res) => {
+  const cfg = configuracionR2();
+  res.json({ credenciales: cfg.credenciales, urlPublica: !!cfg.publicBaseUrl, bucket: cfg.bucket || '' });
+});
+app.post('/api/media/r2/verificar', requireAuth, requireRole('admin'), async (req, res) => {
+  try { res.json({ ok: true, ...(await probarConexionR2()) }); }
+  catch (e) { errorPublico(res, e); }
+});
 
 /* ───────── helpers de conversión fila → objeto (forma que usa el front-end) ───────── */
 const num = (v) => (v == null ? 0 : Number(v));
@@ -532,14 +545,16 @@ app.get('/api/empresas/verificar/:token', async (req, res) => {
     // Empresa ACTIVA
     const [ins] = await c.query(
       "INSERT INTO empresas (slug,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,estado,verify_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,'activa',NULL)",
-      [slug, r.nombre, JSON.stringify(arr(r.tipos_negocio)), r.rubro || '', JSON.stringify(arr(r.rubros).length?arr(r.rubros):[r.rubro].filter(Boolean)), r.descripcion || '', r.telefono || '', r.ciudad || '', r.pais || '', r.logo || '', r.correo]);
+      [slug, r.nombre, JSON.stringify(arr(r.tipos_negocio)), r.rubro || '', JSON.stringify(arr(r.rubros).length?arr(r.rubros):[r.rubro].filter(Boolean)), r.descripcion || '', r.telefono || '', r.ciudad || '', r.pais || '', '', r.correo]);
     const empresaId = ins.insertId;
+    const logoFinal = await persistirImagenWeb(r.logo, { empresaId, carpeta: 'identidad' });
+    if (logoFinal) await c.query('UPDATE empresas SET logo=? WHERE id=?', [logoFinal, empresaId]);
     // Cuenta admin ACTIVA (reutiliza el hash ya calculado en el registro)
     const [adminIns] = await c.query('INSERT INTO users (nombre,email,password_hash,role,empresa_id,activo) VALUES (?,?,?,?,?,1)',
       [r.dueno, r.correo, r.password_hash, 'admin', empresaId]);
     // Config y contadores propios de la empresa
     await c.query('INSERT INTO config (empresa_id,nombre,logo,moneda,tema,pin_admin,banners,pago) VALUES (?,?,?,?,?,?,?,?)',
-      [empresaId, r.nombre, r.logo || '', 'L', 'cielo', '1234', JSON.stringify([]), JSON.stringify({ banco: '', cuenta: '', titular: '', tipo: '', nota: '' })]);
+      [empresaId, r.nombre, logoFinal, 'L', 'cielo', '1234', JSON.stringify([]), JSON.stringify({ banco: '', cuenta: '', titular: '', tipo: '', nota: '' })]);
     await c.query('INSERT INTO app_meta (empresa_id,seq) VALUES (?,?)',
       [empresaId, JSON.stringify({ producto: 0, categoria: 0, proveedor: 0, cliente: 0, compra: 0, venta: 0, movimiento: 0, pedido: 0, mensaje: 0 })]);
     // Ya es empresa real: quitar la solicitud pendiente
@@ -774,6 +789,7 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
   { const vT = validarTelefono(telefono, pais, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   try {
     exigirImagenWeb(logo, 'Logo');
+    const logoFinal = await persistirImagenWeb(logo, { empresaId, carpeta: 'identidad' });
     const tipos = Array.isArray(tiposNegocio) ? normalizarTiposNegocio(tiposNegocio) : null;
     const categorias = Array.isArray(rubros) ? normalizarRubros(rubros,rubro) : null;
     const emailPublico = String(correoPublico || '').toLowerCase().trim();
@@ -790,7 +806,7 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
     }
     await pool.query(
       'UPDATE empresas SET nombre=?, slug=?, tipos_negocio=COALESCE(?,tipos_negocio), rubro=?, rubros=COALESCE(?,rubros), descripcion=?, telefono=?, ciudad=?, pais=?, logo=?, contacto_publico=?, correo_publico=? WHERE id=?',
-      [String(nombre).trim().slice(0,120), nuevoSlug, tipos ? JSON.stringify(tipos) : null, categorias?categorias[0]:(rubro||''), categorias?JSON.stringify(categorias):null, String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logo || '', String(contactoPublico || '').trim().slice(0,120), emailPublico.slice(0,120), empresaId]);
+      [String(nombre).trim().slice(0,120), nuevoSlug, tipos ? JSON.stringify(tipos) : null, categorias?categorias[0]:(rubro||''), categorias?JSON.stringify(categorias):null, String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logoFinal, String(contactoPublico || '').trim().slice(0,120), emailPublico.slice(0,120), empresaId]);
     // Mantiene sincronizado el nombre de la tienda (config) con el de la empresa.
     await pool.query('UPDATE config SET nombre=? WHERE empresa_id=?', [String(nombre).trim().slice(0,80), empresaId]);
     res.json({ ok: true, slug: nuevoSlug });
@@ -1101,11 +1117,12 @@ app.put('/api/galeria', requireAuth, requireRole('admin'), async (req, res) => {
   const pesoGaleria=galeria.reduce((s,item)=>s+String(typeof item==='string'?item:(item&&item.imagen)||'').length,0);
   if(pesoGaleria>22*1024*1024) return res.status(413).json({error:'La galería completa supera el límite permitido. Reduce el peso de algunas fotografías.'});
   try {
-    const limpia=galeria.map((item,i)=>{
+    const limpia=await Promise.all(galeria.map(async(item,i)=>{
       const g=typeof item==='string'?{imagen:item}:item||{};
       exigirImagenWeb(g.imagen,'Imagen de galería');
-      return {id:String(g.id||Date.now()+i).slice(0,48),imagen:g.imagen,titulo:String(g.titulo||'').trim().slice(0,80),descripcion:String(g.descripcion||'').trim().slice(0,180)};
-    });
+      const imagen=await persistirImagenWeb(g.imagen,{empresaId:E,carpeta:'galeria'});
+      return {id:String(g.id||Date.now()+i).slice(0,48),imagen,titulo:String(g.titulo||'').trim().slice(0,80),descripcion:String(g.descripcion||'').trim().slice(0,180)};
+    }));
     const c=await getPool().getConnection();
     try {
       await c.beginTransaction();
@@ -1880,6 +1897,14 @@ app.get('/api/state', requireAuth, requireRole('admin','proveedor'), async (req,
    Sobrescribe SÓLO los datos de la empresa `E`: borra e inserta usando
    empresa_id=E en cada tabla, así nunca toca los datos de otras empresas. */
 async function guardarEstadoCompleto(c, E, db) {
+  const imagenesMaterializadas=new Map();
+  const materializar=async(v,carpeta)=>{
+    if(!v)return '';
+    if(imagenesMaterializadas.has(v))return imagenesMaterializadas.get(v);
+    const url=await persistirImagenWeb(v,{empresaId:E,carpeta});
+    imagenesMaterializadas.set(v,url);
+    return url;
+  };
   const colecciones = ['categorias','proveedores','productos','compras','ventas','movimientos','pedidos','mensajes'];
   for (const nombre of colecciones) {
     if (db[nombre] != null && !Array.isArray(db[nombre])) {
@@ -1898,6 +1923,8 @@ async function guardarEstadoCompleto(c, E, db) {
     const imagenes=arr(p.imagenes);
     if(imagenes.length>6){ const e=new Error('Cada producto admite hasta 6 imágenes'); e.status=400; throw e; }
     for (const imagen of imagenes) exigirImagenWeb(imagen, 'Imagen del producto');
+    p.imagen=await materializar(p.imagen,'productos');
+    p.imagenes=await Promise.all(imagenes.map(imagen=>materializar(imagen,'productos')));
   }
   for (const p of db.pedidos || []) {
     if (!['pendiente','aprobado','preparando','listo','enviado','entregado','cancelado'].includes(p.estado || 'pendiente')) { const e = new Error('Estado de pedido inválido'); e.status = 400; throw e; }
@@ -1921,7 +1948,9 @@ async function guardarEstadoCompleto(c, E, db) {
       const cf = db.config;
       exigirImagenWeb(cf.logo, 'Logo');
       for (const banner of arr(cf.banners)) exigirImagenWeb(banner, 'Banner');
-      const galeria=arr(cf.galeria);
+      cf.logo=await materializar(cf.logo,'identidad');
+      cf.banners=await Promise.all(arr(cf.banners).map(banner=>materializar(banner,'banners')));
+      let galeria=arr(cf.galeria);
       if(galeria.length>12){ const e=new Error('La galería admite hasta 12 imágenes'); e.status=400; throw e; }
       for (const item of galeria) {
         exigirImagenWeb(typeof item==='string'?item:item&&item.imagen, 'Imagen de galería');
@@ -1929,6 +1958,10 @@ async function guardarEstadoCompleto(c, E, db) {
           const e=new Error('El texto de una fotografía de galería es demasiado largo'); e.status=400; throw e;
         }
       }
+      galeria=await Promise.all(galeria.map(async item=>typeof item==='string'
+        ?materializar(item,'galeria')
+        :{...item,imagen:await materializar(item&&item.imagen,'galeria')}));
+      cf.galeria=galeria;
       // UPSERT: si la empresa aún no tiene fila de config, la crea.
       await c.query(
         'INSERT INTO config (empresa_id,nombre,logo,moneda,tema,banners,galeria,pago) VALUES (?,?,?,?,?,?,?,?) ' +
