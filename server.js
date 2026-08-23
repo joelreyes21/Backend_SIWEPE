@@ -406,7 +406,7 @@ async function empresaIdDe(ref) {
 /* ───────── EMPRESAS (registro con verificación por correo) ───────── */
 app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) => {
   if (pareceBot(req)) return res.status(400).json({ error: 'No pudimos procesar el registro. Recargá la página e intentá de nuevo.' });
-  const { nombre, tiposNegocio, rubro, rubros, descripcion, telefono, ciudad, pais, logo, dueno, correo, password } = req.body || {};
+  const { nombre, tiposNegocio, gastronomiaHabilitada, rubro, rubros, descripcion, telefono, ciudad, pais, logo, dueno, correo, password } = req.body || {};
   if (!nombre || !dueno || !correo || !password) return res.status(400).json({ error: 'Faltan datos obligatorios' });
   if (String(password).length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
   { const vN = validarNombreNegocio(nombre, 'nombre del negocio', 30); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
@@ -418,6 +418,7 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
   try {
     exigirImagenWeb(logo, 'Logo');
     const tipos = normalizarTiposNegocio(tiposNegocio);
+    const gastronomia = tipos.includes('Comida y bebidas') && gastronomiaHabilitada === true;
     const categorias = normalizarRubros(rubros, rubro);
     if (Array.isArray(tiposNegocio) && !tipos.length) return res.status(400).json({ error: 'Selecciona qué vende tu negocio' });
     if (String(rubro || '').length > 60 || String(descripcion || '').length > 255) return res.status(400).json({ error: 'La categoría o descripción es demasiado larga' });
@@ -445,8 +446,8 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
     //    Reemplaza cualquier solicitud previa sin confirmar del mismo correo.
     await pool.query('DELETE FROM registros_pendientes WHERE correo=?', [email]);
     await pool.query(
-      'INSERT INTO registros_pendientes (token,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,dueno,password_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      [token, nombre.trim().slice(0,120), JSON.stringify(tipos), categorias[0], JSON.stringify(categorias), String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logo || '', email, dueno.trim().slice(0,120), hashPassword(password)]);
+      'INSERT INTO registros_pendientes (token,nombre,tipos_negocio,gastronomia_habilitada,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,dueno,password_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [token, nombre.trim().slice(0,120), JSON.stringify(tipos), gastronomia?1:0, categorias[0], JSON.stringify(categorias), String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logo || '', email, dueno.trim().slice(0,120), hashPassword(password)]);
     // Sin Resend configurado (desarrollo local) no hay correo real: se manda el
     // link directo en la respuesta para que el front lo pueda mostrar/abrir.
     const body = { ok: true, correo: email };
@@ -549,8 +550,8 @@ app.get('/api/empresas/verificar/:token', async (req, res) => {
     for (;;) { const [ex] = await c.query('SELECT id FROM empresas WHERE slug=? LIMIT 1', [slug]); if (!ex.length) break; slug = base + '-' + (++n); }
     // Empresa ACTIVA
     const [ins] = await c.query(
-      "INSERT INTO empresas (slug,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,estado,verify_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,'activa',NULL)",
-      [slug, r.nombre, JSON.stringify(arr(r.tipos_negocio)), r.rubro || '', JSON.stringify(arr(r.rubros).length?arr(r.rubros):[r.rubro].filter(Boolean)), r.descripcion || '', r.telefono || '', r.ciudad || '', r.pais || '', '', r.correo]);
+      "INSERT INTO empresas (slug,nombre,tipos_negocio,gastronomia_habilitada,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,estado,verify_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'activa',NULL)",
+      [slug, r.nombre, JSON.stringify(arr(r.tipos_negocio)), r.gastronomia_habilitada?1:0, r.rubro || '', JSON.stringify(arr(r.rubros).length?arr(r.rubros):[r.rubro].filter(Boolean)), r.descripcion || '', r.telefono || '', r.ciudad || '', r.pais || '', '', r.correo]);
     const empresaId = ins.insertId;
     const logoFinal = await persistirImagenWeb(r.logo, { empresaId, carpeta: 'identidad' });
     if (logoFinal) await c.query('UPDATE empresas SET logo=? WHERE id=?', [logoFinal, empresaId]);
@@ -772,15 +773,17 @@ app.get('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
   if (!empresaId) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
   try {
     const [[fila]] = await getPool().query(
-      'SELECT id,slug,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,contacto_publico,correo_publico FROM empresas WHERE id=?', [empresaId]);
+      'SELECT id,slug,nombre,tipos_negocio,gastronomia_habilitada,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,contacto_publico,correo_publico FROM empresas WHERE id=?', [empresaId]);
     if (!fila) return res.status(404).json({ error: 'Empresa no encontrada' });
     fila.tiposNegocio = arr(fila.tipos_negocio);
     fila.rubros = arr(fila.rubros).length?arr(fila.rubros):[fila.rubro].filter(Boolean);
     fila.contactoPublico = fila.contacto_publico || '';
     fila.correoPublico = fila.correo_publico || '';
+    fila.gastronomiaHabilitada = !!fila.gastronomia_habilitada;
     delete fila.tipos_negocio;
     delete fila.contacto_publico;
     delete fila.correo_publico;
+    delete fila.gastronomia_habilitada;
     res.json(fila);
   } catch (err) { errorPublico(res, err); }
 });
@@ -788,7 +791,7 @@ app.get('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
 app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) => {
   const empresaId = req.user.empresa_id;
   if (!empresaId) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
-  const { nombre, tiposNegocio, rubro, rubros, descripcion, telefono, ciudad, pais, logo, contactoPublico, correoPublico } = req.body || {};
+  const { nombre, tiposNegocio, gastronomiaHabilitada, rubro, rubros, descripcion, telefono, ciudad, pais, logo, contactoPublico, correoPublico } = req.body || {};
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre del negocio' });
   { const vN = validarNombreNegocio(nombre, 'nombre del negocio', 30); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
   { const vT = validarTelefono(telefono, pais, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
@@ -796,6 +799,11 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
     exigirImagenWeb(logo, 'Logo');
     const logoFinal = await persistirImagenWeb(logo, { empresaId, carpeta: 'identidad' });
     const tipos = Array.isArray(tiposNegocio) ? normalizarTiposNegocio(tiposNegocio) : null;
+    // Clientes antiguos que todavía no envían tiposNegocio no deben apagar el
+    // módulo por accidente. Solo se modifica cuando el perfil manda los tipos.
+    const gastronomia = tipos
+      ? (tipos.includes('Comida y bebidas') && gastronomiaHabilitada === true ? 1 : 0)
+      : null;
     const categorias = Array.isArray(rubros) ? normalizarRubros(rubros,rubro) : null;
     const emailPublico = String(correoPublico || '').toLowerCase().trim();
     if (emailPublico && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailPublico)) return res.status(400).json({ error: 'El correo público no es válido' });
@@ -810,8 +818,8 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
       nuevoSlug = base + '-' + (++n);
     }
     await pool.query(
-      'UPDATE empresas SET nombre=?, slug=?, tipos_negocio=COALESCE(?,tipos_negocio), rubro=?, rubros=COALESCE(?,rubros), descripcion=?, telefono=?, ciudad=?, pais=?, logo=?, contacto_publico=?, correo_publico=? WHERE id=?',
-      [String(nombre).trim().slice(0,120), nuevoSlug, tipos ? JSON.stringify(tipos) : null, categorias?categorias[0]:(rubro||''), categorias?JSON.stringify(categorias):null, String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logoFinal, String(contactoPublico || '').trim().slice(0,120), emailPublico.slice(0,120), empresaId]);
+      'UPDATE empresas SET nombre=?, slug=?, tipos_negocio=COALESCE(?,tipos_negocio), gastronomia_habilitada=COALESCE(?,gastronomia_habilitada), rubro=?, rubros=COALESCE(?,rubros), descripcion=?, telefono=?, ciudad=?, pais=?, logo=?, contacto_publico=?, correo_publico=? WHERE id=?',
+      [String(nombre).trim().slice(0,120), nuevoSlug, tipos ? JSON.stringify(tipos) : null, gastronomia, categorias?categorias[0]:(rubro||''), categorias?JSON.stringify(categorias):null, String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logoFinal, String(contactoPublico || '').trim().slice(0,120), emailPublico.slice(0,120), empresaId]);
     // Mantiene sincronizado el nombre de la tienda (config) con el de la empresa.
     await pool.query('UPDATE config SET nombre=? WHERE empresa_id=?', [String(nombre).trim().slice(0,80), empresaId]);
     res.json({ ok: true, slug: nuevoSlug });
@@ -1152,7 +1160,12 @@ function datosOperacionInventario(body) {
 }
 
 app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req,res)=>{
-  const E=req.user.empresa_id, c=await getPool().getConnection();
+  const E=req.user.empresa_id;
+  let imagenEntrada='';
+  try{
+    imagenEntrada=exigirImagenWeb(req.body&&req.body.imagen,'Imagen del producto');
+  }catch(e){return errorPublico(res,e);}
+  const c=await getPool().getConnection();
   try{
     const op=datosOperacionInventario(req.body||{});
     let proveedorId=num(req.body&&req.body.proveedorId), proveedorCreado=false;
@@ -1177,17 +1190,24 @@ app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req
     if(productoId){
       [[producto]]=await c.query('SELECT * FROM productos WHERE empresa_id=? AND id=? FOR UPDATE',[E,productoId]);
       if(!producto){await c.rollback();return res.status(404).json({error:'Producto no encontrado'});}
-      await c.query('UPDATE productos SET stock_inventario=stock_inventario+?,precio_compra=? WHERE empresa_id=? AND id=?',[op.cantidad,op.precio,E,productoId]);
+      const imagenes=arr(producto.imagenes).filter(Boolean);
+      if(imagenEntrada&&imagenes.length>=6){await c.rollback();return res.status(409).json({error:'Este producto ya tiene el máximo de 6 fotografías'});}
+      const imagenFinal=imagenEntrada?await persistirImagenWeb(imagenEntrada,{empresaId:E,carpeta:'productos'}):'';
+      if(imagenFinal&&!imagenes.includes(imagenFinal)){
+        imagenes.push(imagenFinal);
+      }
+      await c.query('UPDATE productos SET stock_inventario=stock_inventario+?,precio_compra=?,imagen=?,imagenes=? WHERE empresa_id=? AND id=?',[op.cantidad,op.precio,producto.imagen||imagenFinal||'',JSON.stringify(imagenes),E,productoId]);
     }else{
       const nuevo=req.body&&req.body.nuevo||{}, nombre=String(nuevo.nombre||'').trim().slice(0,120), categoriaId=num(nuevo.categoria_id);
       if(!nombre||!categoriaId){await c.rollback();return res.status(400).json({error:'Para un artículo nuevo indica nombre y categoría'});}
       const [[cat]]=await c.query("SELECT id FROM categorias WHERE empresa_id=? AND id=? AND estado='activo'",[E,categoriaId]);
       if(!cat){await c.rollback();return res.status(400).json({error:'La categoría no está disponible'});}
+      const imagenFinal=imagenEntrada?await persistirImagenWeb(imagenEntrada,{empresaId:E,carpeta:'productos'}):'';
       const [[mx]]=await c.query('SELECT COALESCE(MAX(id),0) m FROM productos WHERE empresa_id=?',[E]);
       productoId=Math.max(num(seq.producto),num(mx&&mx.m))+1; seq.producto=productoId;
       const codigo=String(nuevo.codigo||`PROD-${String(productoId).padStart(4,'0')}`).trim().slice(0,40);
       await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_inventario,stock_min,imagen,imagenes,estado,destacado,publicado_alguna_vez,marca,tipo_piel) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [E,productoId,codigo,nombre,categoriaId,String(nuevo.descripcion||'').slice(0,1000),op.precio,num(nuevo.precio_venta),0,op.cantidad,Math.max(0,num(nuevo.stock_min)), '',JSON.stringify([]),'inactivo',0,0,String(nuevo.marca||'').slice(0,80),JSON.stringify([])]);
+        [E,productoId,codigo,nombre,categoriaId,String(nuevo.descripcion||'').slice(0,1000),op.precio,num(nuevo.precio_venta),0,op.cantidad,Math.max(0,num(nuevo.stock_min)),imagenFinal,JSON.stringify(imagenFinal?[imagenFinal]:[]),'inactivo',0,0,String(nuevo.marca||'').slice(0,80),JSON.stringify([])]);
     }
     const [[mc]]=await c.query('SELECT COALESCE(MAX(id),0) m FROM compras WHERE empresa_id=?',[E]);
     const compraId=Math.max(num(seq.compra),num(mc&&mc.m))+1; seq.compra=compraId;
@@ -1860,6 +1880,7 @@ app.get('/api/state', requireAuth, requireRole('admin','proveedor'), async (req,
     const empresaId = req.user.empresa_id;
     if (!empresaId) return res.status(403).json({ error: 'Tu usuario no está asociado a ninguna empresa' });
     const pool = getPool();
+    const [[empresa]] = await pool.query('SELECT id,slug,tipos_negocio,gastronomia_habilitada FROM empresas WHERE id=?', [empresaId]);
     const [[cfg]] = await pool.query('SELECT * FROM config WHERE empresa_id=?', [empresaId]);
     const [[meta]] = await pool.query('SELECT seq,version FROM app_meta WHERE empresa_id=?', [empresaId]);
     const [categorias] = await pool.query('SELECT id,nombre,descripcion,estado FROM categorias WHERE empresa_id=?', [empresaId]);
@@ -1887,6 +1908,8 @@ app.get('/api/state', requireAuth, requireRole('admin','proveedor'), async (req,
 
     res.json({
       _revision: num(meta && meta.version),
+      empresa_id: empresaId,
+      empresa: empresa ? { id:empresa.id, slug:empresa.slug, tiposNegocio:arr(empresa.tipos_negocio), gastronomiaHabilitada:!!empresa.gastronomia_habilitada } : null,
       config: { nombre: cfgBase.nombre, logo: cfgBase.logo || '', moneda: cfgBase.moneda, tema: cfgBase.tema, banners: arr(cfgBase.banners), galeria: arr(cfgBase.galeria), pago: obj(cfgBase.pago) },
       seq: meta ? obj(meta.seq) : {},
       categorias,

@@ -244,6 +244,16 @@ async function _migrarSuperAdmin(pool) {
   if (!c.length) await pool.query("ALTER TABLE users ADD COLUMN super_admin TINYINT NOT NULL DEFAULT 0 AFTER role");
 }
 
+/* El módulo de mesas/comandas es una decisión explícita del negocio. No se
+   habilita automáticamente para instalaciones existentes ni para empresas
+   que no hayan indicado que venden comida y bebidas. */
+async function _migrarGastronomiaOpcional(pool) {
+  const [e] = await pool.query("SHOW COLUMNS FROM empresas LIKE 'gastronomia_habilitada'");
+  if (!e.length) await pool.query('ALTER TABLE empresas ADD COLUMN gastronomia_habilitada TINYINT NOT NULL DEFAULT 0 AFTER tipos_negocio');
+  const [p] = await pool.query("SHOW COLUMNS FROM registros_pendientes LIKE 'gastronomia_habilitada'");
+  if (!p.length) await pool.query('ALTER TABLE registros_pendientes ADD COLUMN gastronomia_habilitada TINYINT NOT NULL DEFAULT 0 AFTER tipos_negocio');
+}
+
 /* Operación comercial 2026: variantes y trazabilidad del POS. Las tablas
    nuevas se crean desde schema.sql; estas columnas se añaden a instalaciones
    existentes porque CREATE TABLE IF NOT EXISTS no modifica su estructura. */
@@ -284,6 +294,7 @@ async function initDb(reintentos = 6) {
       await _migrarVisitasEmpresa(pool);
       await _migrarGalerias(pool);
       await _migrarTiposNegocio(pool);
+      await _migrarGastronomiaOpcional(pool);
       await _migrarCuentaUnicaPorCorreo(pool);
       await _migrarRubrosEmpresa(pool);
       await _migrarFooterEmpresa(pool);

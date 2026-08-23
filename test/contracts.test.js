@@ -492,15 +492,36 @@ test('operación comercial integra caja, POS, variantes, promociones e importaci
 
 test('recordatorios internos y módulo gastronómico comparten caja e inventario', () => {
   const schema=leer(path.join(raiz,'schema.sql'));
+  const server=leer(path.join(raiz,'server.js'));
   const operaciones=leer(path.join(raiz,'operaciones.js'));
   const adminHtml=leer(path.join(front,'pages','admin.html'));
+  const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
+  const index=leer(path.join(front,'index.html'));
   for(const tabla of ['notificacion_lecturas','mesas','comandas','comanda_items']) assert.match(schema,new RegExp(`CREATE TABLE IF NOT EXISTS ${tabla}`,'i'));
+  assert.match(schema,/gastronomia_habilitada\s+TINYINT/i);
   assert.match(operaciones,/router\.get\('\/notificaciones'/);
-  assert.match(operaciones,/router\.post\('\/gastronomia\/comandas'/);
-  assert.match(operaciones,/router\.post\('\/gastronomia\/comandas\/:id\/cerrar'/);
-  assert.match(adminHtml,/data-page="gastronomia"/);
+  assert.match(operaciones,/function exigirGastronomia/);
+  assert.match(operaciones,/router\.post\('\/gastronomia\/comandas',\.\.\.gastroAdmin/);
+  assert.match(operaciones,/router\.post\('\/gastronomia\/comandas\/:id\/cerrar',\.\.\.gastroAdmin/);
+  assert.match(adminHtml,/id="sb-gastro-item"[^>]*data-page="gastronomia"[^>]*hidden/);
+  assert.match(adminMain,/function gastronomiaDisponible/);
+  assert.match(index,/id="e-gastronomia"/);
+  assert.match(server,/gastronomiaHabilitada/);
   assert.match(adminHtml,/Recordatorios de cobro/);
   assert.doesNotMatch(operaciones,/twilio|whatsapp|sendgrid/i);
+});
+
+test('todas las cargas comerciales limitan a 4 MB y la compra admite foto WEBP opcional', () => {
+  const server=leer(path.join(raiz,'server.js'));
+  const adminHtml=leer(path.join(front,'pages','admin.html'));
+  const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
+  const index=leer(path.join(front,'index.html'));
+  assert.match(index,/Logo \(opcional\)[\s\S]*máximo 4 MB[\s\S]*WEBP/i);
+  assert.match(adminHtml,/id="cfg-logo-inp"[\s\S]*máximo 4 MB[\s\S]*WEBP/i);
+  assert.match(adminMain,/id="fc-img"[\s\S]*Máximo 4 MB[\s\S]*WEBP/i);
+  assert.match(adminMain,/imagen:compraImagenDraft\|\|''/);
+  assert.match(server,/req\.body&&req\.body\.imagen,'Imagen del producto'/);
+  assert.match(server,/carpeta:'productos'/);
 });
 
 test('carrito y checkout conservan la variante y el marketplace oculta costos internos', () => {
