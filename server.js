@@ -29,8 +29,13 @@ app.use(helmet());
    defensa (la sesión va por JWT), pero reduce que cualquier sitio arbitrario
    pueda pegarle a la API desde el navegador de un visitante. Configurable por
    env (`CORS_ORIGINS`, separado por comas) para agregar dominios sin tocar código. */
-const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'https://siwepe.shop,http://localhost:5500,http://127.0.0.1:5500')
-  .split(',').map(s => s.trim()).filter(Boolean);
+const CORS_ORIGINS = [...new Set([
+  'https://siwepe.shop',
+  'https://www.siwepe.shop',
+  'http://localhost:5500',
+  'http://127.0.0.1:5500',
+  ...(process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean),
+])];
 console.log('CORS_ORIGINS configurados:', CORS_ORIGINS);
 app.use(cors({
   origin: function(origin, callback) {
@@ -1159,6 +1164,12 @@ function datosOperacionInventario(body) {
   return {cantidad,precio,fecha,obs:String(body&&body.obs||'').trim().slice(0,255)};
 }
 
+function contarImagenesUnicasProducto(principales=[],variantes=[]){
+  const unicas=new Set((principales||[]).filter(Boolean));
+  for(const variante of variantes||[]) if(variante&&variante.imagen) unicas.add(variante.imagen);
+  return unicas.size;
+}
+
 async function variantesDeEntrada(nuevo,cantidad,empresaId){
   const recibidas=Array.isArray(nuevo&&nuevo.variantes)?nuevo.variantes:[];
   if(recibidas.length>50){const e=new Error('Un producto admite hasta 50 variantes');e.status=400;throw e;}
@@ -1197,7 +1208,7 @@ app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req
   let imagenesEntrada=[];
   try{
     const recibidas=Array.isArray(req.body&&req.body.imagenes)?req.body.imagenes:(req.body&&req.body.imagen?[req.body.imagen]:[]);
-    if(recibidas.length>5){const e=new Error('Cada producto admite hasta 5 fotografías principales');e.status=400;throw e;}
+    if(recibidas.length>5){const e=new Error('Cada producto admite hasta 5 imágenes totales entre galería y variantes');e.status=400;throw e;}
     imagenesEntrada=recibidas.map((imagen,i)=>exigirImagenWeb(imagen,`Fotografía ${i+1} del producto`)).filter(Boolean);
   }catch(e){return errorPublico(res,e);}
   const c=await getPool().getConnection();
@@ -1227,10 +1238,10 @@ app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req
       if(!producto){await c.rollback();return res.status(404).json({error:'Producto no encontrado'});}
       const imagenes=arr(producto.imagenes).filter(Boolean);
       if(producto.imagen&&!imagenes.includes(producto.imagen)) imagenes.unshift(producto.imagen);
-      if(imagenes.length+imagenesEntrada.length>5){await c.rollback();return res.status(409).json({error:`Este producto solo admite ${Math.max(0,5-imagenes.length)} fotografía(s) adicional(es)`});}
+      const variantes=arr(producto.variantes),distribucion=Array.isArray(req.body&&req.body.distribucionVariantes)?req.body.distribucionVariantes:[];
+      if(contarImagenesUnicasProducto([...imagenes,...imagenesEntrada],variantes)>5){await c.rollback();return res.status(409).json({error:'El producto admite máximo 5 imágenes en total, contando galería y colores'});}
       const nuevas=await Promise.all(imagenesEntrada.map(imagen=>persistirImagenWeb(imagen,{empresaId:E,carpeta:'productos'})));
       for(const imagen of nuevas.filter(Boolean)) if(!imagenes.includes(imagen)) imagenes.push(imagen);
-      const variantes=arr(producto.variantes),distribucion=Array.isArray(req.body&&req.body.distribucionVariantes)?req.body.distribucionVariantes:[];
       if(variantes.length){
         if(!distribucion.length||distribucion.reduce((s,x)=>s+num(x&&x.cantidad),0)!==op.cantidad){await c.rollback();return res.status(400).json({error:`Distribuye exactamente ${op.cantidad} unidades entre las variantes`});}
         const cantidades=new Map();
@@ -1244,6 +1255,7 @@ app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req
       if(!nombre||!categoriaId){await c.rollback();return res.status(400).json({error:'Para un artículo nuevo indica nombre y categoría'});}
       const [[cat]]=await c.query("SELECT id FROM categorias WHERE empresa_id=? AND id=? AND estado='activo'",[E,categoriaId]);
       if(!cat){await c.rollback();return res.status(400).json({error:'La categoría no está disponible'});}
+      if(contarImagenesUnicasProducto(imagenesEntrada,arr(nuevo.variantes))>5){await c.rollback();return res.status(400).json({error:'El producto admite máximo 5 imágenes en total, contando galería y colores'});}
       const variantes=await variantesDeEntrada(nuevo,op.cantidad,E);
       const codigoBarras=String(nuevo.codigoBarras||'').trim().slice(0,96);
       if(codigoBarras){
@@ -2004,12 +2016,11 @@ async function guardarEstadoCompleto(c, E, db) {
     }
     if (!['activo','inactivo'].includes(p.estado || 'activo')) { const e = new Error('Estado de producto inválido'); e.status = 400; throw e; }
     exigirImagenWeb(p.imagen, 'Imagen del producto');
-    const imagenes=arr(p.imagenes);
-    if(imagenes.length>5){ const e=new Error('Cada producto admite hasta 5 imágenes principales'); e.status=400; throw e; }
+    const imagenes=arr(p.imagenes), variantes=arr(p.variantes);
+    if(contarImagenesUnicasProducto([p.imagen,...imagenes],variantes)>5){ const e=new Error('Cada producto admite hasta 5 imágenes totales entre galería y variantes'); e.status=400; throw e; }
     for (const imagen of imagenes) exigirImagenWeb(imagen, 'Imagen del producto');
     p.imagen=await materializar(p.imagen,'productos');
     p.imagenes=await Promise.all(imagenes.map(imagen=>materializar(imagen,'productos')));
-    const variantes=arr(p.variantes);
     if(variantes.length>50){const e=new Error('Un producto admite hasta 50 variantes');e.status=400;throw e;}
     for(let i=0;i<variantes.length;i++){
       const v=variantes[i];

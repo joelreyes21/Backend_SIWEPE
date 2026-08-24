@@ -97,7 +97,7 @@ test('galería, cuenta global e imágenes múltiples están conectadas de extrem
   const adminHtml = leer(path.join(pages, 'admin.html'));
   assert.match(schema, /galeria\s+JSON/i);
   assert.match(schema, /imagenes\s+JSON/i);
-  assert.match(server, /Cada producto admite hasta 5 imágenes principales/);
+  assert.match(server, /Cada producto admite hasta 5 imágenes totales entre galería y variantes/);
   assert.match(server, /La galería admite hasta 12 imágenes/);
   assert.match(server, /COALESCE\(pr\.imagen/);
   assert.match(datos, /DB\.config\.galeria/);
@@ -562,6 +562,9 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   const tienda=leer(path.join(front,'assets','js','tienda','main.js'));
   assert.match(adminOps,/Nombre de esta opción/);
   assert.match(adminOps,/cargarImagenVariante/);
+  assert.match(adminOps,/Imagen de este color u opción/);
+  assert.match(adminOps,/contarImagenesProducto/);
+  assert.match(adminOps,/máximo 5 imágenes en total/);
   assert.match(adminOps,/máx\. 4 MB/);
   assert.match(adminOps,/Unidades recibidas/);
   assert.match(adminOps,/El SKU se genera automáticamente/);
@@ -572,9 +575,18 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   assert.match(adminMain,/distribucionVariantes/);
   assert.match(adminMain,/varianteId/);
   assert.match(server,/carpeta:'variantes'/);
+  assert.match(server,/contarImagenesUnicasProducto/);
+  assert.match(server,/5 imágenes totales entre galería y variantes/);
   assert.match(server,/skuEntrada\|\|/);
   assert.match(server,/Selecciona una variante válida/);
   assert.match(tienda,/function elegirAtributoDetalle/);
   assert.match(tienda,/v\?\.imagen\|\|p\.imagen/);
   assert.match(tienda,/class="tpd-option/);
+});
+
+test('CORS acepta el dominio canónico con y sin www aunque Railway agregue orígenes', () => {
+  const server=leer(path.join(raiz,'server.js'));
+  assert.match(server,/'https:\/\/siwepe\.shop'/);
+  assert.match(server,/'https:\/\/www\.siwepe\.shop'/);
+  assert.match(server,/\.\.\.\(process\.env\.CORS_ORIGINS \|\| ''\)/);
 });
