@@ -1282,24 +1282,55 @@ app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req
 });
 
 app.post('/api/inventario/transferir', requireAuth, requireRole('admin'), async(req,res)=>{
-  const E=req.user.empresa_id, productoId=num(req.body&&req.body.productoId), cantidad=num(req.body&&req.body.cantidad), direccion=String(req.body&&req.body.direccion||'');
+  const E=req.user.empresa_id, productoId=num(req.body&&req.body.productoId), cantidad=num(req.body&&req.body.cantidad), direccion=String(req.body&&req.body.direccion||''), distribucion=Array.isArray(req.body&&req.body.distribucionVariantes)?req.body.distribucionVariantes:[];
   if(!productoId||!Number.isInteger(cantidad)||cantidad<=0||!['publicar','retirar'].includes(direccion)) return res.status(400).json({error:'Traslado de inventario inválido'});
   const c=await getPool().getConnection();
   try{
     await c.beginTransaction();
-    const [[p]]=await c.query('SELECT nombre,stock,stock_inventario FROM productos WHERE empresa_id=? AND id=? FOR UPDATE',[E,productoId]);
+    const [[p]]=await c.query('SELECT nombre,stock,stock_inventario,variantes FROM productos WHERE empresa_id=? AND id=? FOR UPDATE',[E,productoId]);
     if(!p){await c.rollback();return res.status(404).json({error:'Producto no encontrado'});}
-    if(direccion==='publicar'&&num(p.stock_inventario)<cantidad){await c.rollback();return res.status(409).json({error:`Solo hay ${num(p.stock_inventario)} unidades en inventario`});}
-    if(direccion==='retirar'&&num(p.stock)<cantidad){await c.rollback();return res.status(409).json({error:`Solo hay ${num(p.stock)} unidades publicadas`});}
-    if(direccion==='publicar') await c.query("UPDATE productos SET stock=stock+?,stock_inventario=stock_inventario-?,estado='activo',publicado_alguna_vez=1 WHERE empresa_id=? AND id=?",[cantidad,cantidad,E,productoId]);
-    else await c.query('UPDATE productos SET stock=stock-?,stock_inventario=stock_inventario+? WHERE empresa_id=? AND id=?',[cantidad,cantidad,E,productoId]);
+    const variantes=arr(p.variantes), detalle=[];
+    let stockFinal, inventarioFinal;
+    if(variantes.length){
+      if(!distribucion.length){await c.rollback();return res.status(400).json({error:'Selecciona las variantes y unidades que deseas trasladar'});}
+      const cantidades=new Map();
+      for(const item of distribucion){
+        const varianteId=String(item&&item.varianteId||'').trim().slice(0,80), unidades=num(item&&item.cantidad);
+        if(!varianteId||!Number.isInteger(unidades)||unidades<=0||cantidades.has(varianteId)){await c.rollback();return res.status(400).json({error:'La distribución de variantes no es válida'});}
+        cantidades.set(varianteId,unidades);
+      }
+      if([...cantidades.values()].reduce((s,x)=>s+x,0)!==cantidad){await c.rollback();return res.status(400).json({error:`Distribuye exactamente ${cantidad} unidades entre las variantes`});}
+      for(const [varianteId,unidades] of cantidades){
+        const variante=variantes.find(v=>String(v&&v.id)===varianteId);
+        if(!variante){await c.rollback();return res.status(409).json({error:'Una variante seleccionada ya no existe'});}
+        const disponibles=direccion==='publicar'?num(variante.stockInventario):num(variante.stock);
+        const nombre=nombreVariantePublica(variante)||variante.sku||'Variante';
+        if(disponibles<unidades){await c.rollback();return res.status(409).json({error:`Solo hay ${disponibles} unidades de ${nombre} en ${direccion==='publicar'?'inventario':'tienda'}`});}
+        if(direccion==='publicar'){variante.stock=num(variante.stock)+unidades;variante.stockInventario=num(variante.stockInventario)-unidades;}
+        else {variante.stock=num(variante.stock)-unidades;variante.stockInventario=num(variante.stockInventario)+unidades;}
+        detalle.push(`${nombre}: ${unidades}`);
+      }
+      stockFinal=variantes.reduce((s,v)=>s+num(v&&v.stock),0);
+      inventarioFinal=variantes.reduce((s,v)=>s+num(v&&v.stockInventario),0);
+      if(direccion==='publicar') await c.query("UPDATE productos SET stock=?,stock_inventario=?,variantes=?,estado='activo',publicado_alguna_vez=1 WHERE empresa_id=? AND id=?",[stockFinal,inventarioFinal,JSON.stringify(variantes),E,productoId]);
+      else await c.query('UPDATE productos SET stock=?,stock_inventario=?,variantes=? WHERE empresa_id=? AND id=?',[stockFinal,inventarioFinal,JSON.stringify(variantes),E,productoId]);
+    }else{
+      if(distribucion.length){await c.rollback();return res.status(400).json({error:'Este producto no utiliza variantes'});}
+      if(direccion==='publicar'&&num(p.stock_inventario)<cantidad){await c.rollback();return res.status(409).json({error:`Solo hay ${num(p.stock_inventario)} unidades en inventario`});}
+      if(direccion==='retirar'&&num(p.stock)<cantidad){await c.rollback();return res.status(409).json({error:`Solo hay ${num(p.stock)} unidades publicadas`});}
+      stockFinal=direccion==='publicar'?num(p.stock)+cantidad:num(p.stock)-cantidad;
+      inventarioFinal=direccion==='publicar'?num(p.stock_inventario)-cantidad:num(p.stock_inventario)+cantidad;
+      if(direccion==='publicar') await c.query("UPDATE productos SET stock=?,stock_inventario=?,estado='activo',publicado_alguna_vez=1 WHERE empresa_id=? AND id=?",[stockFinal,inventarioFinal,E,productoId]);
+      else await c.query('UPDATE productos SET stock=?,stock_inventario=? WHERE empresa_id=? AND id=?',[stockFinal,inventarioFinal,E,productoId]);
+    }
     const [[meta]]=await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE',[E]),seq=obj(meta&&meta.seq);
     const [[mm]]=await c.query('SELECT COALESCE(MAX(id),0) m FROM movimientos WHERE empresa_id=?',[E]);
     const movimientoId=Math.max(num(seq.movimiento),num(mm&&mm.m))+1;seq.movimiento=movimientoId;
-    await c.query('INSERT INTO movimientos (empresa_id,id,tipo,signo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?,?,?,?,?,?,?,?)',[E,movimientoId,'ajuste',direccion==='publicar'?'+':'-',productoId,cantidad,new Date().toISOString().slice(0,10),req.user.nombre,direccion==='publicar'?'Inventario → tienda':'Tienda → inventario']);
+    const observacion=`${direccion==='publicar'?'Inventario → tienda':'Tienda → inventario'}${detalle.length?' · '+detalle.join(', '):''}`.slice(0,255);
+    await c.query('INSERT INTO movimientos (empresa_id,id,tipo,signo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?,?,?,?,?,?,?,?)',[E,movimientoId,'ajuste',direccion==='publicar'?'+':'-',productoId,cantidad,new Date().toISOString().slice(0,10),req.user.nombre,observacion]);
     await c.query('UPDATE app_meta SET seq=? WHERE empresa_id=?',[JSON.stringify(seq),E]);
     const revision=await subirVersion(c,E);await c.commit();
-    res.json({ok:true,revision,stock:direccion==='publicar'?num(p.stock)+cantidad:num(p.stock)-cantidad,stockInventario:direccion==='publicar'?num(p.stock_inventario)-cantidad:num(p.stock_inventario)+cantidad});
+    res.json({ok:true,revision,stock:stockFinal,stockInventario:inventarioFinal,distribucionVariantes:distribucion});
   }catch(e){await c.rollback().catch(()=>{});errorPublico(res,e);}finally{c.release();}
 });
 

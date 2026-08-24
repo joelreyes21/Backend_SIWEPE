@@ -589,6 +589,22 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   assert.match(tienda,/class="tpd-option/);
 });
 
+test('los traslados de inventario distribuyen cada color y talla sin desajustar el total', () => {
+  const server=leer(path.join(raiz,'server.js'));
+  const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
+  const adminCss=leer(path.join(front,'assets','css','admin.css'));
+  assert.match(adminMain,/existenciasUbicacionProducto/);
+  assert.match(adminMain,/stock-transfer-variant-list/);
+  assert.match(adminMain,/fit-variant-qty/);
+  assert.match(adminMain,/distribucionVariantes/);
+  assert.match(adminMain,/Indica cuántas unidades mover de cada color, talla o presentación/);
+  assert.match(adminCss,/\.stock-transfer-variants/);
+  assert.match(server,/Selecciona las variantes y unidades que deseas trasladar/);
+  assert.match(server,/Una variante seleccionada ya no existe/);
+  assert.match(server,/stockFinal=variantes\.reduce/);
+  assert.match(server,/inventarioFinal=variantes\.reduce/);
+});
+
 test('CORS acepta el dominio canónico con y sin www aunque Railway agregue orígenes', () => {
   const server=leer(path.join(raiz,'server.js'));
   assert.match(server,/'https:\/\/siwepe\.shop'/);
