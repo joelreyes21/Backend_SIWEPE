@@ -1159,11 +1159,14 @@ function datosOperacionInventario(body) {
   return {cantidad,precio,fecha,obs:String(body&&body.obs||'').trim().slice(0,255)};
 }
 
-function variantesDeEntrada(nuevo,cantidad){
+async function variantesDeEntrada(nuevo,cantidad,empresaId){
   const recibidas=Array.isArray(nuevo&&nuevo.variantes)?nuevo.variantes:[];
   if(recibidas.length>50){const e=new Error('Un producto admite hasta 50 variantes');e.status=400;throw e;}
   const firmas=new Set();
-  const variantes=recibidas.map((v,i)=>{
+  const imagenesPersistidas=new Map();
+  const variantes=[];
+  for(let i=0;i<recibidas.length;i++){
+    const v=recibidas[i];
     const atributos={};
     for(const clave of ['talla','color','presentacion']){
       const valor=String(v&&v.atributos&&v.atributos[clave]||'').trim().slice(0,60);
@@ -1175,8 +1178,14 @@ function variantesDeEntrada(nuevo,cantidad){
     firmas.add(firma);
     const stockInventario=num(v&&v.stockInventario), stockMin=num(v&&v.stockMin);
     if(!Number.isInteger(stockInventario)||stockInventario<0||!Number.isInteger(stockMin)||stockMin<0){const e=new Error(`Las existencias de la variante ${i+1} no son válidas`);e.status=400;throw e;}
-    return {id:String(v&&v.id||`VAR-${i+1}`).trim().slice(0,80),sku:String(v&&v.sku||'').trim().slice(0,80),atributos,precioCompra:Math.max(0,num(v&&v.precioCompra)),precioVenta:Math.max(0,num(v&&v.precioVenta)),stock:0,stockInventario,stockMin,activo:v&&v.activo!==false};
-  });
+    const imagenEntrada=exigirImagenWeb(v&&v.imagen,`Imagen de la variante ${i+1}`);
+    let imagen='';
+    if(imagenEntrada){
+      if(imagenesPersistidas.has(imagenEntrada)) imagen=imagenesPersistidas.get(imagenEntrada);
+      else {imagen=await persistirImagenWeb(imagenEntrada,{empresaId,carpeta:'variantes'});imagenesPersistidas.set(imagenEntrada,imagen);}
+    }
+    variantes.push({id:String(v&&v.id||`VAR-${i+1}`).trim().slice(0,80),nombre:String(v&&v.nombre||'').trim().slice(0,120),sku:String(v&&v.sku||'').trim().slice(0,80),imagen,atributos,precioCompra:Math.max(0,num(v&&v.precioCompra)),precioVenta:Math.max(0,num(v&&v.precioVenta)),stock:0,stockInventario,stockMin,activo:v&&v.activo!==false});
+  }
   if(variantes.length&&variantes.reduce((s,v)=>s+v.stockInventario,0)!==cantidad){const e=new Error(`Distribuye exactamente ${cantidad} unidades entre las variantes`);e.status=400;throw e;}
   return variantes;
 }
@@ -1186,7 +1195,7 @@ app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req
   let imagenesEntrada=[];
   try{
     const recibidas=Array.isArray(req.body&&req.body.imagenes)?req.body.imagenes:(req.body&&req.body.imagen?[req.body.imagen]:[]);
-    if(recibidas.length>6){const e=new Error('Cada producto admite hasta 6 fotografías');e.status=400;throw e;}
+    if(recibidas.length>5){const e=new Error('Cada producto admite hasta 5 fotografías principales');e.status=400;throw e;}
     imagenesEntrada=recibidas.map((imagen,i)=>exigirImagenWeb(imagen,`Fotografía ${i+1} del producto`)).filter(Boolean);
   }catch(e){return errorPublico(res,e);}
   const c=await getPool().getConnection();
@@ -1216,16 +1225,24 @@ app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req
       if(!producto){await c.rollback();return res.status(404).json({error:'Producto no encontrado'});}
       const imagenes=arr(producto.imagenes).filter(Boolean);
       if(producto.imagen&&!imagenes.includes(producto.imagen)) imagenes.unshift(producto.imagen);
-      if(imagenes.length+imagenesEntrada.length>6){await c.rollback();return res.status(409).json({error:`Este producto solo admite ${Math.max(0,6-imagenes.length)} fotografía(s) adicional(es)`});}
+      if(imagenes.length+imagenesEntrada.length>5){await c.rollback();return res.status(409).json({error:`Este producto solo admite ${Math.max(0,5-imagenes.length)} fotografía(s) adicional(es)`});}
       const nuevas=await Promise.all(imagenesEntrada.map(imagen=>persistirImagenWeb(imagen,{empresaId:E,carpeta:'productos'})));
       for(const imagen of nuevas.filter(Boolean)) if(!imagenes.includes(imagen)) imagenes.push(imagen);
-      await c.query('UPDATE productos SET stock_inventario=stock_inventario+?,precio_compra=?,imagen=?,imagenes=? WHERE empresa_id=? AND id=?',[op.cantidad,op.precio,producto.imagen||imagenes[0]||'',JSON.stringify(imagenes),E,productoId]);
+      const variantes=arr(producto.variantes),distribucion=Array.isArray(req.body&&req.body.distribucionVariantes)?req.body.distribucionVariantes:[];
+      if(variantes.length){
+        if(!distribucion.length||distribucion.reduce((s,x)=>s+num(x&&x.cantidad),0)!==op.cantidad){await c.rollback();return res.status(400).json({error:`Distribuye exactamente ${op.cantidad} unidades entre las variantes`});}
+        const cantidades=new Map();
+        for(const item of distribucion){const id=String(item&&item.varianteId||''),cantidad=num(item&&item.cantidad);if(!id||!Number.isInteger(cantidad)||cantidad<=0||cantidades.has(id)){await c.rollback();return res.status(400).json({error:'La distribución de variantes no es válida'});}cantidades.set(id,cantidad);}
+        for(const [id] of cantidades)if(!variantes.some(v=>String(v.id)===id)){await c.rollback();return res.status(400).json({error:'Una variante seleccionada ya no existe'});}
+        for(const v of variantes){const extra=cantidades.get(String(v.id))||0;if(extra){v.stockInventario=num(v.stockInventario)+extra;v.precioCompra=op.precio;}}
+      }else if(distribucion.length){await c.rollback();return res.status(400).json({error:'Este producto no utiliza variantes'});}
+      await c.query('UPDATE productos SET stock_inventario=stock_inventario+?,precio_compra=?,imagen=?,imagenes=?,variantes=? WHERE empresa_id=? AND id=?',[op.cantidad,op.precio,producto.imagen||imagenes[0]||'',JSON.stringify(imagenes),JSON.stringify(variantes),E,productoId]);
     }else{
       const nuevo=req.body&&req.body.nuevo||{}, nombre=String(nuevo.nombre||'').trim().slice(0,120), categoriaId=num(nuevo.categoria_id);
       if(!nombre||!categoriaId){await c.rollback();return res.status(400).json({error:'Para un artículo nuevo indica nombre y categoría'});}
       const [[cat]]=await c.query("SELECT id FROM categorias WHERE empresa_id=? AND id=? AND estado='activo'",[E,categoriaId]);
       if(!cat){await c.rollback();return res.status(400).json({error:'La categoría no está disponible'});}
-      const variantes=variantesDeEntrada(nuevo,op.cantidad);
+      const variantes=await variantesDeEntrada(nuevo,op.cantidad,E);
       const codigoBarras=String(nuevo.codigoBarras||'').trim().slice(0,96);
       if(codigoBarras){
         const [[repetido]]=await c.query('SELECT id FROM productos WHERE empresa_id=? AND codigo_barras=? LIMIT 1',[E,codigoBarras]);
@@ -1273,23 +1290,27 @@ app.post('/api/inventario/transferir', requireAuth, requireRole('admin'), async(
 });
 
 app.post('/api/ventas/directas', requireAuth, requireRole('admin'), async(req,res)=>{
-  const E=req.user.empresa_id, productoId=num(req.body&&req.body.productoId), cantidad=num(req.body&&req.body.cantidad), precio=num(req.body&&req.body.precio), fecha=String(req.body&&req.body.fecha||''), confirmar=!!(req.body&&req.body.confirmarInventario);
+  const E=req.user.empresa_id, productoId=num(req.body&&req.body.productoId), varianteId=String(req.body&&req.body.varianteId||'').trim().slice(0,80), cantidad=num(req.body&&req.body.cantidad), precio=num(req.body&&req.body.precio), fecha=String(req.body&&req.body.fecha||''), confirmar=!!(req.body&&req.body.confirmarInventario);
   const clienteNombre=String(req.body&&req.body.clienteNombre||'').trim().slice(0,120), clienteIdentidad=String(req.body&&req.body.clienteIdentidad||'').trim().slice(0,40);
   if(!productoId||!Number.isInteger(cantidad)||cantidad<=0||precio<0||!clienteNombre||!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({error:'Completa correctamente los datos de la venta'});
   const c=await getPool().getConnection();
   try{
     await c.beginTransaction();
-    const [[p]]=await c.query('SELECT nombre,stock,stock_inventario,stock_min FROM productos WHERE empresa_id=? AND id=? FOR UPDATE',[E,productoId]);
+    const [[p]]=await c.query('SELECT nombre,stock,stock_inventario,stock_min,variantes FROM productos WHERE empresa_id=? AND id=? FOR UPDATE',[E,productoId]);
     if(!p){await c.rollback();return res.status(404).json({error:'Producto no encontrado'});}
-    const tienda=Math.min(cantidad,num(p.stock)), inventario=cantidad-tienda, totalDisponible=num(p.stock)+num(p.stock_inventario);
+    const variantes=arr(p.variantes),variante=variantes.find(v=>String(v.id)===varianteId);
+    if(variantes.length&&!variante){await c.rollback();return res.status(400).json({error:'Selecciona una variante válida'});}
+    const stockTienda=variante?num(variante.stock):num(p.stock),stockInventario=variante?num(variante.stockInventario):num(p.stock_inventario);
+    const tienda=Math.min(cantidad,stockTienda), inventario=cantidad-tienda, totalDisponible=stockTienda+stockInventario;
     if(cantidad>totalDisponible){await c.rollback();return res.status(409).json({error:`Solo hay ${totalDisponible} unidades entre tienda e inventario`});}
-    if(inventario>0&&!confirmar){await c.rollback();return res.status(409).json({error:`La tienda tiene ${num(p.stock)} unidades. Para completar la venta se tomarán ${inventario} del inventario.`,requiereConfirmacion:true,distribucion:{tienda,inventario}});}
-    await c.query('UPDATE productos SET stock=stock-?,stock_inventario=stock_inventario-? WHERE empresa_id=? AND id=?',[tienda,inventario,E,productoId]);
+    if(inventario>0&&!confirmar){await c.rollback();return res.status(409).json({error:`La tienda tiene ${stockTienda} unidades de esta opción. Para completar la venta se tomarán ${inventario} del inventario.`,requiereConfirmacion:true,distribucion:{tienda,inventario}});}
+    if(variante){variante.stock=stockTienda-tienda;variante.stockInventario=stockInventario-inventario;}
+    await c.query('UPDATE productos SET stock=stock-?,stock_inventario=stock_inventario-?,variantes=? WHERE empresa_id=? AND id=?',[tienda,inventario,JSON.stringify(variantes),E,productoId]);
     const [[meta]]=await c.query('SELECT seq FROM app_meta WHERE empresa_id=? FOR UPDATE',[E]),seq=obj(meta&&meta.seq);
     const [[mv]]=await c.query('SELECT COALESCE(MAX(id),0) m FROM ventas WHERE empresa_id=?',[E]);
     const ventaId=Math.max(num(seq.venta),num(mv&&mv.m))+1;seq.venta=ventaId;
     const origen=inventario&&tienda?'mixto':inventario?'inventario':'tienda';
-    await c.query('INSERT INTO ventas (empresa_id,id,producto_id,cliente_id,cliente_nombre,cliente_identidad,pedido_id,estado,origen_stock,stock_tienda_usado,stock_inventario_usado,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[E,ventaId,productoId,null,clienteNombre,clienteIdentidad,null,'activa',origen,tienda,inventario,cantidad,precio,fecha,+(cantidad*precio).toFixed(2)]);
+    await c.query('INSERT INTO ventas (empresa_id,id,producto_id,cliente_id,cliente_nombre,cliente_identidad,pedido_id,estado,origen_stock,stock_tienda_usado,stock_inventario_usado,variante_id,variante_nombre,cantidad,precio,fecha,total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[E,ventaId,productoId,null,clienteNombre,clienteIdentidad,null,'activa',origen,tienda,inventario,variante&&variante.id||null,nombreVariantePublica(variante)||null,cantidad,precio,fecha,+(cantidad*precio).toFixed(2)]);
     const [[mm]]=await c.query('SELECT COALESCE(MAX(id),0) m FROM movimientos WHERE empresa_id=?',[E]);
     const movimientoId=Math.max(num(seq.movimiento),num(mm&&mm.m))+1;seq.movimiento=movimientoId;
     await c.query('INSERT INTO movimientos (empresa_id,id,tipo,signo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?,?,?,?,?,?,?,?)',[E,movimientoId,'salida',null,productoId,cantidad,fecha,req.user.nombre,`Venta a ${clienteNombre} · ${tienda} tienda${inventario?` + ${inventario} inventario`:''}`]);
@@ -1432,7 +1453,7 @@ app.post('/api/pedidos/checkout', limitarIntentos(20, 10 * 60 * 1000), requireAu
         else if(variantes.length)return {errorVariante:true,producto_id:it.producto_id};
         if (it.cantidad > stock) return { errorStock: true, producto_id: it.producto_id, disponible: stock };
         const calc=precioPromocional(disponible,base,it.cantidad,promos), precio=calc.precio;
-        return { producto_id: it.producto_id, varianteId:variante&&variante.id||'', varianteNombre:nombreVariantePublica(variante), nombre: disponible.nombre, imagen: disponible.imagen || arr(disponible.imagenes)[0] || '', cantidad: it.cantidad, precio, promocion:calc.promocion, subtotal: +(precio * it.cantidad).toFixed(2) };
+        return { producto_id: it.producto_id, varianteId:variante&&variante.id||'', varianteNombre:nombreVariantePublica(variante), nombre: disponible.nombre, imagen: variante&&variante.imagen || disponible.imagen || arr(disponible.imagenes)[0] || '', cantidad: it.cantidad, precio, promocion:calc.promocion, subtotal: +(precio * it.cantidad).toFixed(2) };
       });
       if (itemsCalc.some(x => x === null)) {
         await c.rollback();
@@ -1877,7 +1898,7 @@ app.get('/api/marketplace', async (req, res) => {
         const variantes = arr(p.variantes).filter(v => v && v.activo !== false).map(v => {
           const pv = precioPromocional(p, v.precioVenta, 1, promos);
           return {
-            id: String(v.id || ''), sku: String(v.sku || ''), atributos: v.atributos || {},
+            id: String(v.id || ''), nombre:String(v.nombre||''), sku: String(v.sku || ''), imagen:String(v.imagen||''), atributos: v.atributos || {},
             precioOriginal: num(v.precioVenta), precioVenta: pv.precio,
             stock: num(v.stock), activo: true, promocion: pv.promocion,
           };
@@ -1982,10 +2003,18 @@ async function guardarEstadoCompleto(c, E, db) {
     if (!['activo','inactivo'].includes(p.estado || 'activo')) { const e = new Error('Estado de producto inválido'); e.status = 400; throw e; }
     exigirImagenWeb(p.imagen, 'Imagen del producto');
     const imagenes=arr(p.imagenes);
-    if(imagenes.length>6){ const e=new Error('Cada producto admite hasta 6 imágenes'); e.status=400; throw e; }
+    if(imagenes.length>5){ const e=new Error('Cada producto admite hasta 5 imágenes principales'); e.status=400; throw e; }
     for (const imagen of imagenes) exigirImagenWeb(imagen, 'Imagen del producto');
     p.imagen=await materializar(p.imagen,'productos');
     p.imagenes=await Promise.all(imagenes.map(imagen=>materializar(imagen,'productos')));
+    const variantes=arr(p.variantes);
+    if(variantes.length>50){const e=new Error('Un producto admite hasta 50 variantes');e.status=400;throw e;}
+    for(let i=0;i<variantes.length;i++){
+      const v=variantes[i];
+      exigirImagenWeb(v&&v.imagen,`Imagen de la variante ${i+1}`);
+      if(v&&v.imagen)v.imagen=await materializar(v.imagen,'variantes');
+    }
+    p.variantes=variantes;
   }
   for (const p of db.pedidos || []) {
     if (!['pendiente','aprobado','preparando','listo','enviado','entregado','cancelado'].includes(p.estado || 'pendiente')) { const e = new Error('Estado de pedido inválido'); e.status = 400; throw e; }
@@ -2049,7 +2078,7 @@ async function guardarEstadoCompleto(c, E, db) {
     for (const x of db.proveedores || [])
       await c.query('INSERT INTO proveedores (empresa_id,id,nombre,telefono,correo,empresa,direccion,whatsapp,origen,estado) VALUES (?,?,?,?,?,?,?,?,?,?)', [E, x.id, String(x.nombre||'').slice(0,80), String(x.telefono||'').slice(0,30), String(x.correo||'').slice(0,120), String(x.empresa||'').slice(0,80), String(x.direccion||'').slice(0,160), String(x.whatsapp||'').slice(0,24), x.origen==='no_registrado'?'no_registrado':'registrado', x.estado || 'activo']);
     for (const x of db.productos || []) {
-      const imagenes=arr(x.imagenes).filter(Boolean).slice(0,6);
+      const imagenes=arr(x.imagenes).filter(Boolean).slice(0,5);
       const portada=x.imagen||imagenes[0]||'';
       await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_inventario,stock_min,imagen,imagenes,estado,destacado,publicado_alguna_vez,marca,tipo_piel,codigo_barras,variantes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         [E, x.id, String(x.codigo||'').slice(0,40), String(x.nombre||'').slice(0,120), x.categoria_id || null, String(x.descripcion||''), num(x.precio_compra), num(x.precio_venta), num(x.stock), num(x.stock_inventario), num(x.stock_min), portada, JSON.stringify(imagenes), x.estado || 'activo', x.destacado ? 1 : 0, x.publicado_alguna_vez ? 1 : 0, String(x.marca||'').slice(0,80), JSON.stringify(x.tipoPiel || []), String(x.codigoBarras||'').slice(0,96)||null, JSON.stringify(arr(x.variantes))]);

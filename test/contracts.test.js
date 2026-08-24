@@ -97,7 +97,7 @@ test('galería, cuenta global e imágenes múltiples están conectadas de extrem
   const adminHtml = leer(path.join(pages, 'admin.html'));
   assert.match(schema, /galeria\s+JSON/i);
   assert.match(schema, /imagenes\s+JSON/i);
-  assert.match(server, /Cada producto admite hasta 6 imágenes/);
+  assert.match(server, /Cada producto admite hasta 5 imágenes principales/);
   assert.match(server, /La galería admite hasta 12 imágenes/);
   assert.match(server, /COALESCE\(pr\.imagen/);
   assert.match(datos, /DB\.config\.galeria/);
@@ -520,7 +520,7 @@ test('todas las cargas comerciales limitan a 4 MB y la compra admite foto WEBP o
   assert.match(index,/Logo \(opcional\)[\s\S]*máximo 4 MB[\s\S]*WEBP/i);
   assert.match(adminHtml,/id="cfg-logo-inp"[\s\S]*máximo 4 MB[\s\S]*WEBP/i);
   assert.match(adminMain,/id="fc-img"[\s\S]*Máximo 4 MB[\s\S]*WEBP/i);
-  assert.match(adminMain,/imagenes:compraImagenesDraft\.slice\(0,6\)/);
+  assert.match(adminMain,/imagenes:compraImagenesDraft\.slice\(0,5\)/);
   assert.match(server,/req\.body&&req\.body\.imagenes/);
   assert.match(server,/carpeta:'productos'/);
 });
@@ -535,7 +535,7 @@ test('los productos se crean desde inventario y el catálogo administrativo qued
   assert.doesNotMatch(cabecera,/openFormProducto\(\)/);
   assert.doesNotMatch(adminMain,/class="pca-actions"/);
   for(const id of ['fp-codigo','fp-nombre','fp-barcode','fp-desc','fp-pventa','fp-stock-inv','fp-stockmin','fp-variants','fp-destacado','fp-marca']) assert.match(adminMain,new RegExp(`id="${id}"`));
-  assert.match(adminMain,/imagenes:compraImagenesDraft\.slice\(0,6\)/);
+  assert.match(adminMain,/imagenes:compraImagenesDraft\.slice\(0,5\)/);
   assert.match(adminMain,/Distribuye exactamente/);
   assert.match(adminOps,/__varianteModoEntrada/);
   assert.match(server,/variantesDeEntrada/);
@@ -553,4 +553,21 @@ test('carrito y checkout conservan la variante y el marketplace oculta costos in
   assert.match(server,/precioCompra:undefined/);
   assert.match(server,/stockInventario:undefined/);
   assert.match(server,/variante_id,pi\.variante_nombre/);
+});
+
+test('variantes opcionales conectan entrada, venta directa, imágenes y selector público compatible', () => {
+  const server=leer(path.join(raiz,'server.js'));
+  const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
+  const adminOps=leer(path.join(front,'assets','js','admin','operations.js'));
+  const tienda=leer(path.join(front,'assets','js','tienda','main.js'));
+  assert.match(adminOps,/Nombre de esta opción/);
+  assert.match(adminOps,/cargarImagenVariante/);
+  assert.match(adminOps,/máx\. 4 MB/);
+  assert.match(adminMain,/distribucionVariantes/);
+  assert.match(adminMain,/varianteId/);
+  assert.match(server,/carpeta:'variantes'/);
+  assert.match(server,/Selecciona una variante válida/);
+  assert.match(tienda,/function elegirAtributoDetalle/);
+  assert.match(tienda,/v\?\.imagen\|\|p\.imagen/);
+  assert.match(tienda,/class="tpd-option/);
 });
