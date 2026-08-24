@@ -567,6 +567,11 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   assert.match(adminOps,/máximo 5 imágenes en total/);
   assert.match(adminOps,/máx\. 4 MB/);
   assert.match(adminOps,/Unidades recibidas/);
+  assert.match(adminOps,/OPS_TALLAS_COMUNES/);
+  assert.match(adminOps,/alternarTallaVariante/);
+  assert.match(adminOps,/Tallas y unidades/);
+  assert.match(adminOps,/ops-size-qty/);
+  assert.match(adminOps,/SIWEPE creará una variante de inventario por cada talla elegida/);
   assert.match(adminOps,/El SKU se genera automáticamente/);
   assert.match(adminOps,/actualizarResumenVariantesEntrada/);
   assert.match(adminMain,/Opciones por color, talla o presentación/);
