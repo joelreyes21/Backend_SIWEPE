@@ -1184,7 +1184,9 @@ async function variantesDeEntrada(nuevo,cantidad,empresaId){
       if(imagenesPersistidas.has(imagenEntrada)) imagen=imagenesPersistidas.get(imagenEntrada);
       else {imagen=await persistirImagenWeb(imagenEntrada,{empresaId,carpeta:'variantes'});imagenesPersistidas.set(imagenEntrada,imagen);}
     }
-    variantes.push({id:String(v&&v.id||`VAR-${i+1}`).trim().slice(0,80),nombre:String(v&&v.nombre||'').trim().slice(0,120),sku:String(v&&v.sku||'').trim().slice(0,80),imagen,atributos,precioCompra:Math.max(0,num(v&&v.precioCompra)),precioVenta:Math.max(0,num(v&&v.precioVenta)),stock:0,stockInventario,stockMin,activo:v&&v.activo!==false});
+    const skuEntrada=String(v&&v.sku||'').trim();
+    const sku=skuEntrada||`${String(nuevo&&nuevo.codigo||'VAR').trim().replace(/\s+/g,'-')}-${String(i+1).padStart(2,'0')}`;
+    variantes.push({id:String(v&&v.id||`VAR-${i+1}`).trim().slice(0,80),nombre:String(v&&v.nombre||'').trim().slice(0,120),sku:sku.slice(0,80),imagen,atributos,precioCompra:Math.max(0,num(v&&v.precioCompra)),precioVenta:Math.max(0,num(v&&v.precioVenta)),stock:0,stockInventario,stockMin,activo:v&&v.activo!==false});
   }
   if(variantes.length&&variantes.reduce((s,v)=>s+v.stockInventario,0)!==cantidad){const e=new Error(`Distribuye exactamente ${cantidad} unidades entre las variantes`);e.status=400;throw e;}
   return variantes;

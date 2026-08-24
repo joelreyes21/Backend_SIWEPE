@@ -563,9 +563,16 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   assert.match(adminOps,/Nombre de esta opción/);
   assert.match(adminOps,/cargarImagenVariante/);
   assert.match(adminOps,/máx\. 4 MB/);
+  assert.match(adminOps,/Unidades recibidas/);
+  assert.match(adminOps,/El SKU se genera automáticamente/);
+  assert.match(adminOps,/actualizarResumenVariantesEntrada/);
+  assert.match(adminMain,/Opciones por color, talla o presentación/);
+  assert.doesNotMatch(adminMain,/id="fc-nuevo-pcompra-vista"/);
+  assert.doesNotMatch(adminMain,/id="fp-stock-inv" type="number" value="0" readonly/);
   assert.match(adminMain,/distribucionVariantes/);
   assert.match(adminMain,/varianteId/);
   assert.match(server,/carpeta:'variantes'/);
+  assert.match(server,/skuEntrada\|\|/);
   assert.match(server,/Selecciona una variante válida/);
   assert.match(tienda,/function elegirAtributoDetalle/);
   assert.match(tienda,/v\?\.imagen\|\|p\.imagen/);
