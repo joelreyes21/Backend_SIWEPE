@@ -8,8 +8,9 @@ const raiz = path.resolve(__dirname, '..');
 const front = path.resolve(raiz, '..', 'SIWEPEE-main');
 const pages = path.join(front, 'pages');
 const leer = p => fs.readFileSync(p, 'utf8');
-// index.html volvió a vivir en la raíz de SIWEPEE-main; el resto de páginas se quedó en pages/.
-const carpetaDe = nombre => nombre === 'index.html' ? front : pages;
+// La portada comercial vive en index2.html mientras index.html muestra el mantenimiento público.
+const marketplace = 'index2.html';
+const carpetaDe = nombre => ['index.html', marketplace].includes(nombre) ? front : pages;
 
 test('la validación de imágenes rechaza SVG y esquemas ejecutables', () => {
   assert.equal(imagenWebValida('https://cdn.example.com/producto.webp'), true);
@@ -56,7 +57,7 @@ test('la tienda usa autenticación global y checkout dedicado', () => {
 });
 
 test('todas las páginas principales cargan la identidad institucional', () => {
-  for (const nombre of ['index.html','descubrir.html','terminos.html','tienda.html','admin.html']) {
+  for (const nombre of [marketplace,'descubrir.html','terminos.html','tienda.html','admin.html']) {
     const html = leer(path.join(carpetaDe(nombre), nombre));
     assert.match(html, /siwepe-mark\.png/, nombre);
     assert.match(html, /platform\.css/, nombre);
@@ -179,7 +180,7 @@ test('carrito, checkout, confirmación y gestión de pedidos forman un flujo com
 test('el registro de empresa guía por tipo, categoría y descripción persistente', () => {
   const schema = leer(path.join(raiz, 'schema.sql'));
   const server = leer(path.join(raiz, 'server.js'));
-  const index = leer(path.join(front, 'index.html'));
+  const index = leer(path.join(front, marketplace));
   const admin = leer(path.join(front, 'assets', 'js', 'admin', 'main.js'));
   assert.match(schema, /tipos_negocio\s+JSON/i);
   assert.match(server, /normalizarTiposNegocio/);
@@ -235,7 +236,7 @@ test('la activación de empresa abre el panel con un código de sesión de un so
 test('el onboarding limita las categorías a dos y conserva una principal compatible', () => {
   const schema=leer(path.join(raiz,'schema.sql'));
   const server=leer(path.join(raiz,'server.js'));
-  const index=leer(path.join(front, 'index.html'));
+  const index=leer(path.join(front, marketplace));
   assert.match(schema, /rubros\s+JSON/i);
   assert.match(server, /rubros\.length>2/);
   assert.match(index, /Máximo 2 categorías/);
@@ -265,7 +266,7 @@ test('el acceso administrativo y el footer empresarial usan identidad y contacto
 test('el login administrativo no revive una versión anterior desde caché o historial', () => {
   const adminHtml=leer(path.join(pages, 'admin.html'));
   const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
-  const index=leer(path.join(front, 'index.html'));
+  const index=leer(path.join(front, marketplace));
   assert.match(adminHtml,/Cache-Control[^>]*no-cache, no-store/i);
   assert.match(adminHtml,/addEventListener\('pageshow'/);
   assert.match(adminHtml,/ev\.persisted/);
@@ -345,7 +346,7 @@ test('la navegación del panel queda vinculada antes de cualquier retorno del lo
 });
 
 test('la portada renovada ofrece categorías, footer completo y países ampliados', () => {
-  const index=leer(path.join(front, 'index.html'));
+  const index=leer(path.join(front, marketplace));
   const quienes=leer(path.join(pages,'quienes-somos.html'));
   const platformCss=leer(path.join(front,'assets','css','platform.css'));
   assert.match(index,/class="home-category-grid"/);
@@ -496,7 +497,7 @@ test('recordatorios internos y módulo gastronómico comparten caja e inventario
   const operaciones=leer(path.join(raiz,'operaciones.js'));
   const adminHtml=leer(path.join(front,'pages','admin.html'));
   const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
-  const index=leer(path.join(front,'index.html'));
+  const index=leer(path.join(front,marketplace));
   for(const tabla of ['notificacion_lecturas','mesas','comandas','comanda_items']) assert.match(schema,new RegExp(`CREATE TABLE IF NOT EXISTS ${tabla}`,'i'));
   assert.match(schema,/gastronomia_habilitada\s+TINYINT/i);
   assert.match(operaciones,/router\.get\('\/notificaciones'/);
@@ -515,13 +516,30 @@ test('todas las cargas comerciales limitan a 4 MB y la compra admite foto WEBP o
   const server=leer(path.join(raiz,'server.js'));
   const adminHtml=leer(path.join(front,'pages','admin.html'));
   const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
-  const index=leer(path.join(front,'index.html'));
+  const index=leer(path.join(front,marketplace));
   assert.match(index,/Logo \(opcional\)[\s\S]*máximo 4 MB[\s\S]*WEBP/i);
   assert.match(adminHtml,/id="cfg-logo-inp"[\s\S]*máximo 4 MB[\s\S]*WEBP/i);
   assert.match(adminMain,/id="fc-img"[\s\S]*Máximo 4 MB[\s\S]*WEBP/i);
-  assert.match(adminMain,/imagen:compraImagenDraft\|\|''/);
-  assert.match(server,/req\.body&&req\.body\.imagen,'Imagen del producto'/);
+  assert.match(adminMain,/imagenes:compraImagenesDraft\.slice\(0,6\)/);
+  assert.match(server,/req\.body&&req\.body\.imagenes/);
   assert.match(server,/carpeta:'productos'/);
+});
+
+test('los productos se crean desde inventario y el catálogo administrativo queda en consulta', () => {
+  const server=leer(path.join(raiz,'server.js'));
+  const adminHtml=leer(path.join(front,'pages','admin.html'));
+  const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
+  const adminOps=leer(path.join(front,'assets','js','admin','operations.js'));
+  const cabecera=adminHtml.match(/<div class="page" id="page-productos">[\s\S]*?<\/div>\s*<div class="filters-bar">/i)?.[0]||'';
+  assert.match(cabecera,/Importar Excel/);
+  assert.doesNotMatch(cabecera,/openFormProducto\(\)/);
+  assert.doesNotMatch(adminMain,/class="pca-actions"/);
+  for(const id of ['fp-codigo','fp-nombre','fp-barcode','fp-desc','fp-pventa','fp-stock-inv','fp-stockmin','fp-variants','fp-destacado','fp-marca']) assert.match(adminMain,new RegExp(`id="${id}"`));
+  assert.match(adminMain,/imagenes:compraImagenesDraft\.slice\(0,6\)/);
+  assert.match(adminMain,/Distribuye exactamente/);
+  assert.match(adminOps,/__varianteModoEntrada/);
+  assert.match(server,/variantesDeEntrada/);
+  assert.match(server,/codigo_barras,variantes/);
 });
 
 test('carrito y checkout conservan la variante y el marketplace oculta costos internos', () => {
