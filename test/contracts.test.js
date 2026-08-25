@@ -536,7 +536,7 @@ test('los productos se crean desde inventario y el catálogo administrativo qued
   assert.doesNotMatch(adminMain,/class="pca-actions"/);
   for(const id of ['fp-codigo','fp-nombre','fp-desc','fp-pventa','fp-stock-inv','fp-stockmin','fp-variants','fp-destacado','fp-marca']) assert.match(adminMain,new RegExp(`id="${id}"`));
   assert.doesNotMatch(adminMain,/id="fp-barcode"|Código de barras interno/);
-  assert.ok(adminMain.indexOf('Galería principal')<adminMain.indexOf('Variantes del producto'),'la galería principal debe aparecer antes de las variantes');
+  assert.ok(adminMain.indexOf('Galería principal')<adminMain.indexOf('Desglose por variantes'),'la galería principal debe aparecer antes de las variantes');
   assert.match(adminMain,/imagenes:compraImagenesDraft\.slice\(0,5\)/);
   assert.match(adminMain,/Distribuye exactamente/);
   assert.match(adminOps,/__varianteModoEntrada/);
@@ -551,10 +551,32 @@ test('carrito y checkout conservan la variante y el marketplace oculta costos in
   const checkout=leer(path.join(front,'assets','js','commerce','checkout.js'));
   assert.match(data,/variante_id:String/);
   assert.match(cart,/variante_nombre/);
+  assert.match(cart,/variantLabel/);
+  assert.match(checkout,/variantLabel/);
   assert.match(checkout,/varianteId:x\.variante_id/);
   assert.match(server,/precioCompra:undefined/);
   assert.match(server,/stockInventario:undefined/);
   assert.match(server,/variante_id,pi\.variante_nombre/);
+});
+
+test('el total general se desglosa por variantes y el enlace compartido conserva la opción exacta', () => {
+  const server=leer(path.join(raiz,'server.js'));
+  const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
+  const adminOps=leer(path.join(front,'assets','js','admin','operations.js'));
+  const tienda=leer(path.join(front,'assets','js','tienda','main.js'));
+  assert.match(adminMain,/id="fp-stock-total"/);
+  assert.match(adminMain,/Unidades totales recibidas/);
+  assert.match(adminOps,/actualizarResumenGlobalVariantes/);
+  assert.match(adminOps,/Variante \$\{i\+1\}: \$\{n\}/);
+  assert.match(adminOps,/data-k="totalObjetivo"/);
+  assert.match(tienda,/\?variante=\$\{encodeURIComponent\(variante\.id\)\}/);
+  assert.match(tienda,/atributos\.talla\?`Talla:/);
+  assert.match(tienda,/Precio unitario:/);
+  assert.match(tienda,/abrirDetalle\(productoCompartido,varianteCompartida\)/);
+  assert.match(server,/req\.query\.variante/);
+  assert.match(server,/p\.variantes,e\.nombre empresa_nombre/);
+  assert.match(server,/SELECT imagen,imagenes,variantes FROM productos/);
+  assert.match(server,/&variante=\$\{encodeURIComponent\(variante\.id\)\}/);
 });
 
 test('la compra inmediata persiste un carrito liviano y respeta imagen y límite de cada variante', () => {
