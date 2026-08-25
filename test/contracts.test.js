@@ -587,7 +587,7 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
   const adminOps=leer(path.join(front,'assets','js','admin','operations.js'));
   const tienda=leer(path.join(front,'assets','js','tienda','main.js'));
-  assert.match(adminOps,/Nombre de esta opción/);
+  assert.match(adminOps,/Nombre de/);
   assert.match(adminOps,/cargarImagenVariante/);
   assert.match(adminOps,/Imagen de este color u opción/);
   assert.match(adminOps,/contarImagenesProducto/);
@@ -596,9 +596,14 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   assert.match(adminOps,/Unidades recibidas/);
   assert.match(adminOps,/OPS_TALLAS_COMUNES/);
   assert.match(adminOps,/alternarTallaVariante/);
-  assert.match(adminOps,/Tallas y unidades/);
+  assert.match(adminOps,/Tallas y existencias/);
+  assert.match(adminOps,/agregarTallaDesdeSelector/);
+  assert.match(adminOps,/Selecciona una talla/);
+  assert.match(adminOps,/data-size-line/);
+  assert.match(adminOps,/ops-size-store/);
+  assert.match(adminOps,/ops-size-inventory/);
   assert.match(adminOps,/ops-size-qty/);
-  assert.match(adminOps,/SIWEPE creará una variante de inventario por cada talla elegida/);
+  assert.match(adminOps,/SIWEPE creará una variante real por cada talla elegida/);
   assert.match(adminOps,/El SKU se genera automáticamente/);
   assert.match(adminOps,/actualizarResumenVariantesEntrada/);
   assert.match(adminMain,/Opciones por color, talla o presentación/);
@@ -612,6 +617,8 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   assert.match(server,/skuEntrada\|\|/);
   assert.match(server,/Selecciona una variante válida/);
   assert.match(tienda,/function elegirAtributoDetalle/);
+  assert.match(tienda,/TALLAS_BASE_DETALLE/);
+  assert.match(tienda,/disponible\?'':'disabled'/);
   assert.match(tienda,/v\?\.imagen\|\|p\.imagen/);
   assert.match(tienda,/class="tpd-option/);
 });
