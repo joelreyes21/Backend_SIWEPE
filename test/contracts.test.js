@@ -564,6 +564,11 @@ test('la compra inmediata persiste un carrito liviano y respeta imagen y límite
   assert.match(data,/\^\(\?:data\|blob\):/);
   assert.match(data,/No se pudo guardar el carrito en este navegador/);
   assert.match(tienda,/function imagenVarianteDetalle/);
+  assert.match(tienda,/function miniaturasDetalle/);
+  assert.match(tienda,/Math\.max\(variantes\.length,extras\.length\)/);
+  assert.match(tienda,/agregar\(fotos\[0\],'original','Original'\)/);
+  assert.match(tienda,/function seleccionarMiniaturaDetalle/);
+  assert.match(tienda,/item\.varianteIds\.length/);
   assert.match(tienda,/TALLAS_BASE_DETALLE=\['XS','S','M','L','XL'\]/);
   assert.match(tienda,/function valoresGrupoDetalle/);
   assert.match(tienda,/function mismoValorDetalle/);
