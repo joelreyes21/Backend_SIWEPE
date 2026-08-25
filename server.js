@@ -1860,7 +1860,7 @@ app.get('/api/catalog/product-image', async (req, res) => {
     const m = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(src);
     if (!m) return res.status(404).end();
     const contenido = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
-    if (!contenido.length || contenido.length > MAX_IMAGEN) return res.status(404).end();
+    if (!contenido.length || contenido.length > MAX_IMAGEN_BYTES) return res.status(404).end();
     res.set('Content-Type', m[1].toLowerCase());
     res.set('Cache-Control', 'public, max-age=86400, immutable');
     res.send(contenido);
@@ -1890,7 +1890,7 @@ app.get('/compartir/producto/:empresa/:producto', async (req, res) => {
     const titulo = `${fila.nombre}${variante?` · ${nombreVariantePublica(variante)}`:''} · ${fila.empresa_nombre}`;
     const descripcion = `${fila.descripcion || 'Disponible en SIWEPE'} · L ${num(variante&&variante.precioVenta||fila.precio_venta).toFixed(2)}`;
     res.set('Cache-Control', 'public, max-age=300, s-maxage=300');
-    res.type('html').send(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escHtml(titulo)}</title><meta name="description" content="${escHtml(descripcion)}"><meta property="og:type" content="product"><meta property="og:title" content="${escHtml(titulo)}"><meta property="og:description" content="${escHtml(descripcion)}"><meta property="og:image" content="${escHtml(imagen)}"><meta property="og:image:alt" content="${escHtml(fila.nombre)}"><meta property="og:url" content="${escHtml(`${share}${req.originalUrl}`)}"><meta name="twitter:card" content="summary_large_image"><meta http-equiv="refresh" content="0;url=${escHtml(destino)}"></head><body><p>Abriendo <a href="${escHtml(destino)}">${escHtml(fila.nombre)}</a> en SIWEPE…</p></body></html>`);
+    res.type('html').send(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escHtml(titulo)}</title><meta name="description" content="${escHtml(descripcion)}"><meta property="og:type" content="product"><meta property="og:title" content="${escHtml(titulo)}"><meta property="og:description" content="${escHtml(descripcion)}"><meta property="og:image" content="${escHtml(imagen)}"><meta property="og:image:secure_url" content="${escHtml(imagen)}"><meta property="og:image:alt" content="${escHtml(`${fila.nombre}${variante?` - ${nombreVariantePublica(variante)}`:''}`)}"><meta property="og:url" content="${escHtml(`${share}${req.originalUrl}`)}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="${escHtml(imagen)}"><meta http-equiv="refresh" content="0;url=${escHtml(destino)}"></head><body><p>Abriendo <a href="${escHtml(destino)}">${escHtml(fila.nombre)}</a> en SIWEPE…</p></body></html>`);
   } catch (e) { errorPublico(res, e); }
 });
 

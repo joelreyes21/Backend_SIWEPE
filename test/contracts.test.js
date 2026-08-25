@@ -576,6 +576,9 @@ test('el total general se desglosa por variantes y el enlace compartido conserva
   assert.match(server,/req\.query\.variante/);
   assert.match(server,/p\.variantes,e\.nombre empresa_nombre/);
   assert.match(server,/SELECT imagen,imagenes,variantes FROM productos/);
+  assert.match(server,/contenido\.length > MAX_IMAGEN_BYTES/);
+  assert.match(server,/og:image:secure_url/);
+  assert.match(server,/twitter:image/);
   assert.match(server,/&variante=\$\{encodeURIComponent\(variante\.id\)\}/);
 });
 
