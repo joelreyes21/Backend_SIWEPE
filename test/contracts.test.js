@@ -590,7 +590,7 @@ test('la compra inmediata persiste un carrito liviano y respeta imagen y límite
   assert.match(tienda,/function imagenVarianteDetalle/);
   assert.match(tienda,/function miniaturasDetalle/);
   assert.match(tienda,/Math\.max\(variantes\.length,extras\.length\)/);
-  assert.match(tienda,/agregar\(fotos\[0\],'original','Original'\)/);
+  assert.match(tienda,/agregar\(fotos\[0\],'original','Original',varianteOriginal/);
   assert.match(tienda,/function seleccionarMiniaturaDetalle/);
   assert.match(tienda,/item\.varianteIds\.length/);
   assert.match(tienda,/TALLAS_BASE_DETALLE=\['XS','S','M','L','XL'\]/);
@@ -650,6 +650,17 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   assert.match(tienda,/disponible\?'':'disabled'/);
   assert.match(tienda,/v\?\.imagen\|\|p\.imagen/);
   assert.match(tienda,/class="tpd-option/);
+});
+
+test('la compra declara el total antes de repartirlo entre original y variantes', () => {
+  const server=leer(path.join(raiz,'server.js'));
+  const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
+  assert.ok(adminMain.indexOf('id="fc-cant"') < adminMain.indexOf('id="fc-existing-variants"'));
+  assert.match(adminMain,/id:'__original__',nombre:'Producto original'/);
+  assert.match(adminMain,/const opciones=\[original,\.\.\.variantes\.filter/);
+  assert.match(server,/const cantidadOriginal=cantidades\.get\('__original__'\)/);
+  assert.match(server,/id:originalId,nombre:'Original'/);
+  assert.match(server,/atributos:\{talla:'',color:'',presentacion:'Original'\}/);
 });
 
 test('los traslados de inventario distribuyen cada color y talla sin desajustar el total', () => {

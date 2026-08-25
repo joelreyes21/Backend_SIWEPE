@@ -1249,6 +1249,19 @@ app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req
         if(!distribucion.length||distribucion.reduce((s,x)=>s+num(x&&x.cantidad),0)!==op.cantidad){await c.rollback();return res.status(400).json({error:`Distribuye exactamente ${op.cantidad} unidades entre las variantes`});}
         const cantidades=new Map();
         for(const item of distribucion){const id=String(item&&item.varianteId||''),cantidad=num(item&&item.cantidad);if(!id||!Number.isInteger(cantidad)||cantidad<=0||cantidades.has(id)){await c.rollback();return res.status(400).json({error:'La distribución de variantes no es válida'});}cantidades.set(id,cantidad);}
+        const cantidadOriginal=cantidades.get('__original__')||0;
+        if(cantidadOriginal){
+          const originalExistente=variantes.find(v=>/^ORIGINAL-/i.test(String(v&&v.id||''))||String(v&&v.nombre||'').trim().toLowerCase()==='original');
+          if(originalExistente){
+            cantidades.delete('__original__');
+            cantidades.set(String(originalExistente.id),cantidadOriginal);
+          }else{
+            const originalId=`ORIGINAL-${productoId}`;
+            variantes.unshift({id:originalId,nombre:'Original',sku:`${String(producto.codigo||`PROD-${productoId}`).slice(0,67)}-ORIG`,imagen:producto.imagen||imagenes[0]||'',atributos:{talla:'',color:'',presentacion:'Original'},precioCompra:op.precio,precioVenta:Math.max(0,num(producto.precio_venta)),stock:0,stockInventario:0,stockMin:Math.max(0,num(producto.stock_min)),activo:true});
+            cantidades.delete('__original__');
+            cantidades.set(originalId,cantidadOriginal);
+          }
+        }
         for(const [id] of cantidades)if(!variantes.some(v=>String(v.id)===id)){await c.rollback();return res.status(400).json({error:'Una variante seleccionada ya no existe'});}
         for(const v of variantes){const extra=cantidades.get(String(v.id))||0;if(extra){v.stockInventario=num(v.stockInventario)+extra;v.precioCompra=op.precio;}}
       }else if(distribucion.length){await c.rollback();return res.status(400).json({error:'Este producto no utiliza variantes'});}
