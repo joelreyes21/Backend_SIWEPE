@@ -555,6 +555,25 @@ test('carrito y checkout conservan la variante y el marketplace oculta costos in
   assert.match(server,/variante_id,pi\.variante_nombre/);
 });
 
+test('la compra inmediata persiste un carrito liviano y respeta imagen y límite de cada variante', () => {
+  const data=leer(path.join(front,'assets','js','shared','data.js'));
+  const tienda=leer(path.join(front,'assets','js','tienda','main.js'));
+  const cart=leer(path.join(front,'assets','js','commerce','cart.js'));
+  const checkout=leer(path.join(front,'assets','js','commerce','checkout.js'));
+  assert.match(data,/function _cartImageRef/);
+  assert.match(data,/\^\(\?:data\|blob\):/);
+  assert.match(data,/No se pudo guardar el carrito en este navegador/);
+  assert.match(tienda,/function imagenVarianteDetalle/);
+  assert.match(tienda,/Ya seleccionaste el límite de/);
+  assert.match(tienda,/if\(!agregarT\(detalleProdId,detalleQty,detalleVarianteId\)\)return/);
+  assert.match(tienda,/if\(!guardarCarritoTienda\(\)\)\{carrito=previo;return false;\}/);
+  assert.match(cart,/imagen:v\?\.imagen\|\|p\.imagen/);
+  assert.match(checkout,/imagen:v\?\.imagen\|\|p\.imagen/);
+  assert.match(cart,/Si el catálogo no respondió, conservamos la copia liviana del carrito/);
+  assert.match(cart,/if\(!hayCatalogo\)/);
+  assert.match(checkout,/if\(!hayCatalogo\)/);
+});
+
 test('variantes opcionales conectan entrada, venta directa, imágenes y selector público compatible', () => {
   const server=leer(path.join(raiz,'server.js'));
   const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
