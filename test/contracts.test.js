@@ -486,7 +486,7 @@ test('operación comercial integra caja, POS, variantes, promociones e importaci
   assert.match(adminHtml,/data-page="caja"/);
   assert.match(adminHtml,/data-page="pos"/);
   assert.match(adminHtml,/data-page="promociones"/);
-  assert.match(adminOps,/CODE128_PATTERNS/);
+  assert.doesNotMatch(adminOps,/CODE128_PATTERNS|barcodeSvg|generarCodigoInternoProducto/);
   assert.doesNotMatch(adminHtml,/data-value="tarjeta"/);
   assert.match(server,/precioPromocional/);
 });
@@ -534,7 +534,9 @@ test('los productos se crean desde inventario y el catálogo administrativo qued
   assert.match(cabecera,/Importar Excel/);
   assert.doesNotMatch(cabecera,/openFormProducto\(\)/);
   assert.doesNotMatch(adminMain,/class="pca-actions"/);
-  for(const id of ['fp-codigo','fp-nombre','fp-barcode','fp-desc','fp-pventa','fp-stock-inv','fp-stockmin','fp-variants','fp-destacado','fp-marca']) assert.match(adminMain,new RegExp(`id="${id}"`));
+  for(const id of ['fp-codigo','fp-nombre','fp-desc','fp-pventa','fp-stock-inv','fp-stockmin','fp-variants','fp-destacado','fp-marca']) assert.match(adminMain,new RegExp(`id="${id}"`));
+  assert.doesNotMatch(adminMain,/id="fp-barcode"|Código de barras interno/);
+  assert.ok(adminMain.indexOf('Galería principal')<adminMain.indexOf('Variantes del producto'),'la galería principal debe aparecer antes de las variantes');
   assert.match(adminMain,/imagenes:compraImagenesDraft\.slice\(0,5\)/);
   assert.match(adminMain,/Distribuye exactamente/);
   assert.match(adminOps,/__varianteModoEntrada/);
@@ -602,6 +604,11 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   assert.match(adminOps,/data-size-line/);
   assert.match(adminOps,/ops-size-store/);
   assert.match(adminOps,/ops-size-inventory/);
+  assert.match(adminOps,/data-k="totalObjetivo"/);
+  assert.match(adminOps,/Distribuidas/);
+  assert.match(adminOps,/distribuye exactamente \$\{objetivo\} unidades entre sus tallas/);
+  assert.match(adminOps,/maxlength="10"/);
+  assert.match(leer(path.join(front,'assets','css','operations.css')),/ops-size-quantities \.ops-size-stock-row label\{display:block/);
   assert.match(adminOps,/ops-size-qty/);
   assert.match(adminOps,/SIWEPE creará una variante real por cada talla elegida/);
   assert.match(adminOps,/El SKU se genera automáticamente/);
