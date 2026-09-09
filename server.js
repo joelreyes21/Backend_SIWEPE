@@ -210,7 +210,7 @@ function mapProducto(r) {
     descripcion: r.descripcion || '', precio_compra: num(r.precio_compra), precio_venta: num(r.precio_venta),
     stock: num(r.stock), stock_inventario: num(r.stock_inventario), stock_min: num(r.stock_min), imagen: r.imagen || '', estado: r.estado,
     imagenes, destacado: !!r.destacado, publicado_alguna_vez: !!r.publicado_alguna_vez, marca: r.marca || '', tipoPiel: arr(r.tipo_piel),
-    codigoBarras: r.codigo_barras || '', variantes: arr(r.variantes), esPlatillo: !!r.es_platillo };
+    codigoBarras: r.codigo_barras || '', variantes: arr(r.variantes), esPlatillo: !!r.es_platillo, modificadores: arr(r.modificadores) };
 }
 
 function nombreVariantePublica(v) {
@@ -1282,7 +1282,7 @@ app.post('/api/inventario/compras', requireAuth, requireRole('admin'), async(req
       const [[mx]]=await c.query('SELECT COALESCE(MAX(id),0) m FROM productos WHERE empresa_id=?',[E]);
       productoId=Math.max(num(seq.producto),num(mx&&mx.m))+1; seq.producto=productoId;
       const codigo=String(nuevo.codigo||`PROD-${String(productoId).padStart(4,'0')}`).trim().slice(0,40);
-      await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_inventario,stock_min,imagen,imagenes,estado,destacado,publicado_alguna_vez,marca,tipo_piel,codigo_barras,variantes,es_platillo) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)',
+      await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_inventario,stock_min,imagen,imagenes,estado,destacado,publicado_alguna_vez,marca,tipo_piel,codigo_barras,variantes,es_platillo,modificadores) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL)',
         [E,productoId,codigo,nombre,categoriaId,String(nuevo.descripcion||'').slice(0,1000),op.precio,Math.max(0,num(nuevo.precio_venta)),0,op.cantidad,Math.max(0,num(nuevo.stock_min)),imagenesFinales[0]||'',JSON.stringify(imagenesFinales),'inactivo',nuevo.destacado?1:0,0,String(nuevo.marca||'').slice(0,80),JSON.stringify([]),codigoBarras||null,JSON.stringify(variantes)]);
     }
     const [[mc]]=await c.query('SELECT COALESCE(MAX(id),0) m FROM compras WHERE empresa_id=?',[E]);
@@ -2143,8 +2143,8 @@ async function guardarEstadoCompleto(c, E, db) {
     for (const x of db.productos || []) {
       const imagenes=arr(x.imagenes).filter(Boolean).slice(0,5);
       const portada=x.imagen||imagenes[0]||'';
-      await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_inventario,stock_min,imagen,imagenes,estado,destacado,publicado_alguna_vez,marca,tipo_piel,codigo_barras,variantes,es_platillo) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [E, x.id, String(x.codigo||'').slice(0,40), String(x.nombre||'').slice(0,120), x.categoria_id || null, String(x.descripcion||''), num(x.precio_compra), num(x.precio_venta), num(x.stock), num(x.stock_inventario), num(x.stock_min), portada, JSON.stringify(imagenes), x.estado || 'activo', x.destacado ? 1 : 0, x.publicado_alguna_vez ? 1 : 0, String(x.marca||'').slice(0,80), JSON.stringify(x.tipoPiel || []), String(x.codigoBarras||'').slice(0,96)||null, JSON.stringify(arr(x.variantes)), x.esPlatillo ? 1 : 0]);
+      await c.query('INSERT INTO productos (empresa_id,id,codigo,nombre,categoria_id,descripcion,precio_compra,precio_venta,stock,stock_inventario,stock_min,imagen,imagenes,estado,destacado,publicado_alguna_vez,marca,tipo_piel,codigo_barras,variantes,es_platillo,modificadores) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [E, x.id, String(x.codigo||'').slice(0,40), String(x.nombre||'').slice(0,120), x.categoria_id || null, String(x.descripcion||''), num(x.precio_compra), num(x.precio_venta), num(x.stock), num(x.stock_inventario), num(x.stock_min), portada, JSON.stringify(imagenes), x.estado || 'activo', x.destacado ? 1 : 0, x.publicado_alguna_vez ? 1 : 0, String(x.marca||'').slice(0,80), JSON.stringify(x.tipoPiel || []), String(x.codigoBarras||'').slice(0,96)||null, JSON.stringify(arr(x.variantes)), x.esPlatillo ? 1 : 0, JSON.stringify(arr(x.modificadores))]);
     }
     for (const x of db.compras || [])
       await c.query('INSERT INTO compras (empresa_id,id,producto_id,proveedor_id,cantidad,precio,fecha,obs) VALUES (?,?,?,?,?,?,?,?)', [E, x.id, x.producto_id || null, x.proveedor_id || null, num(x.cantidad), num(x.precio), x.fecha, x.obs || '']);
