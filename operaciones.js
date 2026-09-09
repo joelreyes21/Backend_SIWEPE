@@ -153,6 +153,13 @@ async function resolverLinea(c,empresaId,linea,promos,consumir){
   if(!productoId||cantidad<=0) throw error('Hay un producto o cantidad inválida');
   const [[p]]=await c.query("SELECT * FROM productos WHERE empresa_id=? AND id=? AND estado='activo' FOR UPDATE",[empresaId,productoId]);
   if(!p) throw error('Uno de los productos ya no está disponible',404);
+  if(p.es_platillo){
+    // Platillo de restaurante: no controla existencias. Se cobra y se registra
+    // la venta, nunca se exige ni se descuenta stock (no tiene sentido para
+    // algo como "pollo frito" — lo que se controla es el ingrediente, no el plato).
+    const calc=calcularPrecio(p,num(p.precio_venta),cantidad,promos);
+    return {producto:p,variante:null,cantidad,precio:calc.precio,subtotal:+(calc.precio*cantidad).toFixed(2),promocion:calc.promocion,ahorro:calc.ahorro,usaTienda:0,usaInventario:0};
+  }
   let variantes=variantesDe(p), variante=null, precioBase=num(p.precio_venta), tienda=num(p.stock), inventario=num(p.stock_inventario);
   if(texto(linea.varianteId,80)){
     variante=variantes.find(v=>String(v.id)===String(linea.varianteId)&&v.activo!==false);
