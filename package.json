@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "reset": "node reset.js",
+    "reset": "node reset-total.js",
     "test": "node --test",
     "check": "node --check server.js && node --check auth.js && node --check db.js && node --check media.js && node --test"
   },
