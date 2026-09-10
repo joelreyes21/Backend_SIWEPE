@@ -296,13 +296,34 @@ const TEL_PAISES = {
   'Colombia': { code: '57', len: 10 }, 'Estados Unidos': { code: '1', len: 10 },
   'España': { code: '34', len: 9 }, 'Espana': { code: '34', len: 9 }
 };
+// Cantidad de dígitos del teléfono local por país (sin el código de país).
+// Debe coincidir con el mapa PAISES del frontend (index.html).
+const PAIS_TEL = {
+  'Honduras':{tel:8,code:'504'},'Guatemala':{tel:8,code:'502'},'El Salvador':{tel:8,code:'503'},
+  'Belice':{tel:7,code:'501'},'Nicaragua':{tel:8,code:'505'},'Costa Rica':{tel:8,code:'506'},
+  'Panamá':{tel:8,code:'507'},'República Dominicana':{tel:10,code:'1'},'Puerto Rico':{tel:10,code:'1'},
+  'Cuba':{tel:8,code:'53'},'Jamaica':{tel:10,code:'1'},'México':{tel:10,code:'52'},'Colombia':{tel:10,code:'57'},
+  'Venezuela':{tel:10,code:'58'},'Ecuador':{tel:9,code:'593'},'Perú':{tel:9,code:'51'},'Bolivia':{tel:8,code:'591'},
+  'Chile':{tel:9,code:'56'},'Argentina':{tel:10,code:'54'},'Uruguay':{tel:8,code:'598'},'Paraguay':{tel:9,code:'595'},
+  'Brasil':{tel:11,code:'55'},'Canadá':{tel:10,code:'1'},'Estados Unidos':{tel:10,code:'1'},'España':{tel:9,code:'34'}
+};
 function validarTelefono(raw, pais, etiqueta) {
-  // Validación tolerante: solo revisa que sea un número de teléfono plausible
-  // (8 a 15 dígitos, con o sin código de país), sin exigir un formato exacto
-  // de celular hondureño — eso trababa guardados legítimos. Vacío se permite.
+  // Exige exactamente los dígitos que usa el país elegido. Si el país no está
+  // en el mapa, cae a una validación tolerante (8–15 dígitos). Vacío se permite.
   const et = etiqueta || 'teléfono';
-  const solo = String(raw || '').replace(/\D/g, '');
+  let solo = String(raw || '').replace(/\D/g, '');
   if (!solo) return { ok: true, valor: '' };
+  const info = pais && PAIS_TEL[pais];
+  if (info) {
+    // Si viene con el código de país incluido (ej. 504########), se lo quitamos.
+    if (info.code && solo.length === info.code.length + info.tel && solo.startsWith(info.code)) {
+      solo = solo.slice(info.code.length);
+    }
+    if (solo.length !== info.tel) {
+      return { ok: false, error: `El ${et} de ${pais} debe tener ${info.tel} dígitos.` };
+    }
+    return { ok: true, valor: solo };
+  }
   if (solo.length < 8) return { ok: false, error: `El ${et} es muy corto (mínimo 8 dígitos).` };
   if (solo.length > 15) return { ok: false, error: `El ${et} tiene demasiados dígitos.` };
   return { ok: true, valor: solo };
@@ -439,6 +460,14 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
         ? 'Ese correo ya pertenece a una cuenta de cliente. Para administrar una empresa usa otro correo.'
         : 'Ya existe una cuenta SIWEPE con ese correo.';
       return res.status(409).json({ error: mensaje });
+    }
+
+    // Nombre de tienda ÚNICO: no se permiten dos tiendas con el mismo nombre.
+    const [dupN] = await pool.query(
+      "SELECT id FROM empresas WHERE estado='activa' AND LOWER(TRIM(nombre))=LOWER(TRIM(?)) LIMIT 1",
+      [nombre]);
+    if (dupN.length) {
+      return res.status(409).json({ error: 'Ya existe una tienda con ese nombre en SIWEPE. Elegí otro.' });
     }
 
     const token = crypto.randomBytes(24).toString('hex');
@@ -816,6 +845,11 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
     const emailPublico = String(correoPublico || '').toLowerCase().trim();
     if (emailPublico && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailPublico)) return res.status(400).json({ error: 'El correo público no es válido' });
     const pool = getPool();
+    // Nombre ÚNICO: no permitir renombrar a un nombre que ya usa otra tienda.
+    const [dupN] = await pool.query(
+      "SELECT id FROM empresas WHERE estado='activa' AND id<>? AND LOWER(TRIM(nombre))=LOWER(TRIM(?)) LIMIT 1",
+      [empresaId, nombre]);
+    if (dupN.length) return res.status(409).json({ error: 'Ya existe otra tienda con ese nombre. Elegí otro.' });
     // Regenera el slug (el apodo de la URL, ?e=...) a partir del nombre nuevo,
     // para que el enlace de la tienda refleje el nombre actual. Se mantiene
     // único entre empresas, excluyendo la propia.
