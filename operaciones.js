@@ -148,11 +148,36 @@ router.post('/caja/cerrar',...soloAdmin,async(req,res)=>{ const c=await getPool(
 }catch(e){await c.rollback().catch(()=>{});fallo(res,e);}finally{c.release();} });
 
 /* ───────── POS multiproducto ───────── */
+/* Suma el precio de las opciones elegidas de un platillo (ej. "Preparación:
+   Preparado" +5, "Extras: Con cebolla" +5). SOLO cuenta selecciones que
+   existan de verdad en el producto guardado — el navegador manda nombres,
+   nunca precios, así que no hay forma de inflar ni bajar el total desde
+   afuera. Cualquier selección que no calce con el producto se ignora. */
+function calcularModificadores(p,seleccion){
+  const grupos=arr(p.modificadores), detalle=[];
+  let total=0;
+  for(const sel of (Array.isArray(seleccion)?seleccion:[])){
+    const grupo=grupos.find(g=>g&&g.nombre===texto(sel&&sel.grupo,60));
+    const opcion=grupo&&(grupo.opciones||[]).find(o=>o&&o.nombre===texto(sel&&sel.opcion,60));
+    if(!opcion) continue;
+    total+=num(opcion.precio);
+    detalle.push({grupo:grupo.nombre,opcion:opcion.nombre,precio:num(opcion.precio)});
+  }
+  return {total:+total.toFixed(2),detalle};
+}
 async function resolverLinea(c,empresaId,linea,promos,consumir){
   const productoId=num(linea.productoId), cantidad=Math.trunc(num(linea.cantidad));
   if(!productoId||cantidad<=0) throw error('Hay un producto o cantidad inválida');
   const [[p]]=await c.query("SELECT * FROM productos WHERE empresa_id=? AND id=? AND estado='activo' FOR UPDATE",[empresaId,productoId]);
   if(!p) throw error('Uno de los productos ya no está disponible',404);
+  if(p.es_platillo){
+    // Platillo de restaurante: no controla existencias. Se cobra y se registra
+    // la venta, nunca se exige ni se descuenta stock (no tiene sentido para
+    // algo como "pollo frito" — lo que se controla es el ingrediente, no el plato).
+    const mods=calcularModificadores(p,linea.modificadores);
+    const calc=calcularPrecio(p,num(p.precio_venta)+mods.total,cantidad,promos);
+    return {producto:p,variante:null,cantidad,precio:calc.precio,subtotal:+(calc.precio*cantidad).toFixed(2),promocion:calc.promocion,ahorro:calc.ahorro,usaTienda:0,usaInventario:0,modificadores:mods.detalle};
+  }
   let variantes=variantesDe(p), variante=null, precioBase=num(p.precio_venta), tienda=num(p.stock), inventario=num(p.stock_inventario);
   if(texto(linea.varianteId,80)){
     variante=variantes.find(v=>String(v.id)===String(linea.varianteId)&&v.activo!==false);
@@ -177,7 +202,7 @@ async function resolverLinea(c,empresaId,linea,promos,consumir){
 router.post('/pos/cotizar',...soloAdmin,async(req,res)=>{ const c=await getPool().getConnection(); try{
   const empresaId=E(req), promos=await promocionesVigentes(c,empresaId), items=[];
   for(const x of arr(req.body.items)) items.push(await resolverLinea(c,empresaId,{...x,permitirInventario:true},promos,false));
-  res.json({items:items.map(x=>({productoId:x.producto.id,nombre:x.producto.nombre,varianteId:x.variante&&x.variante.id,varianteNombre:nombreVariante(x.variante),cantidad:x.cantidad,precio:x.precio,subtotal:x.subtotal,promocion:x.promocion,ahorro:x.ahorro,usaTienda:x.usaTienda,usaInventario:x.usaInventario})),total:+items.reduce((s,x)=>s+x.subtotal,0).toFixed(2)});
+  res.json({items:items.map(x=>({productoId:x.producto.id,nombre:x.producto.nombre,varianteId:x.variante&&x.variante.id,varianteNombre:nombreVariante(x.variante),cantidad:x.cantidad,precio:x.precio,subtotal:x.subtotal,promocion:x.promocion,ahorro:x.ahorro,usaTienda:x.usaTienda,usaInventario:x.usaInventario,modificadores:x.modificadores||[]})),total:+items.reduce((s,x)=>s+x.subtotal,0).toFixed(2)});
 }catch(e){fallo(res,e);}finally{c.release();} });
 
 router.post('/pos/ventas',...soloAdmin,async(req,res)=>{ const c=await getPool().getConnection(); try{
@@ -193,7 +218,8 @@ router.post('/pos/ventas',...soloAdmin,async(req,res)=>{ const c=await getPool()
     await c.query(`INSERT INTO ventas (empresa_id,id,producto_id,cliente_nombre,cliente_identidad,estado,origen_stock,stock_tienda_usado,stock_inventario_usado,ticket,variante_id,variante_nombre,metodo_pago,turno_caja_id,cantidad,precio,fecha,total)
       VALUES (?,?,?,?,?,'activa',?,?,?,?,?,?,?,?,?,?,?,?)`,[empresaId,id,x.producto.id,texto(req.body.clienteNombre||'Cliente de mostrador',120),texto(req.body.clienteIdentidad,40)||null,x.usaInventario?(x.usaTienda?'mixto':'inventario'):'tienda',x.usaTienda,x.usaInventario,ticket,x.variante&&x.variante.id||null,nombreVariante(x.variante)||null,metodo,turno.id,x.cantidad,x.precio,hoy(),x.subtotal]);
     const movId=await siguienteId(c,empresaId,'movimiento','movimientos');
-    await c.query("INSERT INTO movimientos (empresa_id,id,tipo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?, 'salida',?,?,?,?,?)",[empresaId,movId,x.producto.id,x.cantidad,hoy(),texto(req.user.nombre||'Admin',80),`POS ${ticket}${x.variante?' · '+nombreVariante(x.variante):''}`]);
+    const notaMods=(x.modificadores||[]).length?' · '+x.modificadores.map(m=>`${m.opcion}${m.precio?` (+${m.precio})`:''}`).join(', '):'';
+    await c.query("INSERT INTO movimientos (empresa_id,id,tipo,producto_id,cantidad,fecha,usuario,obs) VALUES (?,?, 'salida',?,?,?,?,?)",[empresaId,movId,x.producto.id,x.cantidad,hoy(),texto(req.user.nombre||'Admin',80),`POS ${ticket}${x.variante?' · '+nombreVariante(x.variante):''}${notaMods}`]);
   }
   await insertarMovimientoCaja(c,empresaId,turno,'venta',metodo,total,`Venta ${ticket}`,ticket,req.user.id);
   await c.query('UPDATE app_meta SET version=version+1 WHERE empresa_id=?',[empresaId]); await c.commit();

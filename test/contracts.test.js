@@ -8,8 +8,8 @@ const raiz = path.resolve(__dirname, '..');
 const front = path.resolve(raiz, '..', 'SIWEPEE-main');
 const pages = path.join(front, 'pages');
 const leer = p => fs.readFileSync(p, 'utf8');
-// La portada comercial vive en index2.html mientras index.html muestra el mantenimiento público.
-const marketplace = 'index2.html';
+// La portada comercial vuelve a vivir en index.html (index2.html ya no existe).
+const marketplace = 'index.html';
 const carpetaDe = nombre => ['index.html', marketplace].includes(nombre) ? front : pages;
 
 test('la validación de imágenes rechaza SVG y esquemas ejecutables', () => {

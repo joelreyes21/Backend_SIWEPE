@@ -178,6 +178,8 @@ CREATE TABLE IF NOT EXISTS productos (
   tipo_piel     JSON,
   codigo_barras VARCHAR(96),               -- identificador interno opcional (Code 128)
   variantes     JSON,                      -- talla/color/presentación con stock y precio propios
+  es_platillo   TINYINT NOT NULL DEFAULT 0, -- 1 = platillo de restaurante: no controla stock, solo registra la venta
+  modificadores JSON,                      -- grupos de opciones con precio adicional (ej. "Extras": con cebolla +5)
   PRIMARY KEY (empresa_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

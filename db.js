@@ -264,6 +264,8 @@ async function _migrarOperacionComercial(pool) {
   }
   await columna('productos','codigo_barras','codigo_barras VARCHAR(96) NULL AFTER tipo_piel');
   await columna('productos','variantes','variantes JSON NULL AFTER codigo_barras');
+  await columna('productos','es_platillo',"es_platillo TINYINT NOT NULL DEFAULT 0 AFTER variantes");
+  await columna('productos','modificadores',"modificadores JSON NULL AFTER es_platillo");
   await columna('ventas','ticket','ticket VARCHAR(50) NULL AFTER stock_inventario_usado');
   await columna('ventas','variante_id','variante_id VARCHAR(80) NULL AFTER ticket');
   await columna('ventas','variante_nombre','variante_nombre VARCHAR(180) NULL AFTER variante_id');
