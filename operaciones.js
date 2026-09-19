@@ -222,10 +222,15 @@ router.delete('/promociones/:id',...soloAdmin,async(req,res)=>{try{await getPool
 
 /* ───────── Importación Excel/CSV ───────── */
 const encabezados={codigo:'codigo',sku:'codigo',nombre:'nombre',producto:'nombre',categoria:'categoria','categoría':'categoria',descripcion:'descripcion','descripción':'descripcion','precio compra':'precioCompra',costo:'precioCompra','precio venta':'precioVenta',precio:'precioVenta','stock tienda':'stock','publicado':'stock','stock inventario':'stockInventario',inventario:'stockInventario','stock minimo':'stockMin','stock mínimo':'stockMin',marca:'marca',estado:'estado','generar codigo':'generarCodigo'};
-function limpioHeader(x){return String(x||'').trim().toLowerCase().replace(/[_-]+/g,' ').replace(/\s+/g,' ');}
-function leerCsv(textoCsv){const filas=[],fila=[];let campo='',comillas=false;const pushCampo=()=>{fila.push(campo);campo='';},pushFila=()=>{pushCampo();if(fila.some(x=>String(x).trim()))filas.push(fila.splice(0));else fila.length=0;};for(let i=0;i<textoCsv.length;i++){const ch=textoCsv[i];if(ch==='"'){if(comillas&&textoCsv[i+1]==='"'){campo+='"';i++;}else comillas=!comillas;}else if(ch===','&&!comillas)pushCampo();else if((ch==='\n'||ch==='\r')&&!comillas){if(ch==='\r'&&textoCsv[i+1]==='\n')i++;pushFila();}else campo+=ch;}if(campo.length||fila.length)pushFila();return filas;}
+function limpioHeader(x){return String(x||'').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[_-]+/g,' ').replace(/\s+/g,' ');}
+function leerCsv(textoCsv,sep){sep=sep||',';const filas=[],fila=[];let campo='',comillas=false;const pushCampo=()=>{fila.push(campo);campo='';},pushFila=()=>{pushCampo();if(fila.some(x=>String(x).trim()))filas.push(fila.splice(0));else fila.length=0;};for(let i=0;i<textoCsv.length;i++){const ch=textoCsv[i];if(ch==='"'){if(comillas&&textoCsv[i+1]==='"'){campo+='"';i++;}else comillas=!comillas;}else if(ch===sep&&!comillas)pushCampo();else if((ch==='\n'||ch==='\r')&&!comillas){if(ch==='\r'&&textoCsv[i+1]==='\n')i++;pushFila();}else campo+=ch;}if(campo.length||fila.length)pushFila();return filas;}
+// Excel en español exporta CSV con ";"; en inglés con ",". Detectamos cuál usa la
+// primera línea para no romper las columnas.
+function detectarSeparador(texto){const l=(texto.split(/\r?\n/)[0]||'');const pc=(l.match(/;/g)||[]).length,co=(l.match(/,/g)||[]).length,tab=(l.match(/\t/g)||[]).length;if(tab>pc&&tab>co)return '\t';return pc>co?';':',';}
 async function leerArchivo(buffer,nombre){
-  const datos=/\.csv$/i.test(nombre)?leerCsv(buffer.toString('utf8').replace(/^\uFEFF/,'')):await readSheet(buffer);
+  const esCsv=/\.csv$/i.test(nombre);
+  const rawCsv=esCsv?buffer.toString('utf8').replace(/^\uFEFF/,''):'';
+  const datos=esCsv?leerCsv(rawCsv,detectarSeparador(rawCsv)):await readSheet(buffer);
   if(!datos.length) throw error('El archivo no contiene filas');
   const headers={};datos[0].forEach((valor,col)=>{const k=encabezados[limpioHeader(valor)];if(k)headers[col]=k;});
   if(!Object.values(headers).includes('nombre')) throw error('La hoja necesita una columna Nombre o Producto');
