@@ -126,6 +126,15 @@ async function _migrarVersionEstado(pool) {
   if (!c.length) await pool.query('ALTER TABLE app_meta ADD COLUMN version INT NOT NULL DEFAULT 0');
 }
 
+/* Verificación por CÓDIGO de 6 dígitos en vez de enlace: el registro pendiente
+   guarda el código y cuántas veces se falló al escribirlo. */
+async function _migrarCodigoVerificacion(pool) {
+  const [c] = await pool.query("SHOW COLUMNS FROM registros_pendientes LIKE 'codigo'");
+  if (!c.length) await pool.query('ALTER TABLE registros_pendientes ADD COLUMN codigo VARCHAR(6) NULL AFTER password_hash');
+  const [i] = await pool.query("SHOW COLUMNS FROM registros_pendientes LIKE 'intentos'");
+  if (!i.length) await pool.query('ALTER TABLE registros_pendientes ADD COLUMN intentos TINYINT NOT NULL DEFAULT 0 AFTER codigo');
+}
+
 /* Contador de visitas por empresa (para "tiendas destacadas" en descubrir.html). */
 async function _migrarVisitasEmpresa(pool) {
   const [c] = await pool.query("SHOW COLUMNS FROM empresas LIKE 'visitas'");
@@ -305,6 +314,7 @@ async function initDb(reintentos = 6) {
       await _migrarEntregaPedidos(pool);
       await _migrarSuperAdmin(pool);
       await _migrarOperacionComercial(pool);
+      await _migrarCodigoVerificacion(pool);
       console.log(`MySQL conectado: ${CFG.user}@${CFG.host}:${CFG.port}/${CFG.database}`);
       return pool;
     } catch (e) {

@@ -369,34 +369,47 @@ function webBaseSeguro(valor) {
   } catch(e) {}
   return SITE_URL.replace(/\/$/,'');
 }
-async function enviarVerificacion(correo, nombre, token, webBase) {
-  const link = `${PUBLIC_API_URL}/api/empresas/verificar/${token}?site=${encodeURIComponent(webBaseSeguro(webBase))}`;
+/* Código de verificación: 6 dígitos, criptográficamente aleatorio y sin sesgo
+   (el rechazo de valores altos evita que los primeros números salgan más). */
+function generarCodigo6() {
+  for (;;) {
+    const n = crypto.randomBytes(4).readUInt32BE(0);
+    if (n >= 4294000000) continue;          // descarta la cola que sesgaría el módulo
+    return String(n % 1000000).padStart(6, '0');
+  }
+}
+
+async function enviarVerificacion(correo, nombre, codigo) {
   // Sin RESEND_API_KEY (típico en desarrollo local) no hay cómo mandar el correo
-  // de verdad: se avisa por consola y se devuelve el link para que quien llamó
+  // de verdad: se avisa por consola y se devuelve el código para que quien llamó
   // (POST /api/empresas) pueda mostrárselo al usuario en la propia UI.
-  if (!resend) { console.warn('RESEND_API_KEY no configurada. Link de verificación:', link); return { enviado: false, link }; }
+  if (!resend) { console.warn('RESEND_API_KEY no configurada. Código de verificación:', codigo); return { enviado: false, codigo }; }
   const remitente = process.env.MAIL_FROM || 'SIWEPE <onboarding@resend.dev>';
   // El SDK de Resend NO lanza excepción cuando la API rechaza el envío: devuelve
   // { data, error }. Hay que revisar `error` a mano, si no el fallo pasa en silencio.
   const { data, error } = await resend.emails.send({
     from: remitente,
     to: correo,
-    subject: 'Verificá tu empresa en SIWEPE',
+    subject: `${codigo} es tu código de verificación · SIWEPE`,
     html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#21303D">
       <h2 style="color:#4F86C6">Bienvenido a SIWEPE</h2>
       <p>Hola ${escHtml(nombre)}, gracias por registrar tu empresa.</p>
-      <p>Para activarla, confirmá tu correo:</p>
-      <p style="text-align:center;margin:24px 0"><a href="${link}" style="background:#4F86C6;color:#fff;padding:12px 26px;border-radius:8px;text-decoration:none;font-weight:bold">Verificar mi empresa</a></p>
-      <p style="color:#888;font-size:13px">Si no fuiste vos, ignorá este correo.</p>
+      <p>Escribí este código en la pantalla de SIWEPE para activarla:</p>
+      <p style="text-align:center;margin:26px 0">
+        <span style="display:inline-block;background:#EAF2FB;color:#21303D;padding:16px 28px;border-radius:12px;font-size:34px;font-weight:bold;letter-spacing:10px;font-family:'Courier New',monospace">${escHtml(codigo)}</span>
+      </p>
+      <p style="color:#5A6B78;font-size:14px">El código vence en 1 hora y solo sirve una vez.</p>
+      <p style="color:#888;font-size:13px">Si no fuiste vos, ignorá este correo: sin el código nadie puede crear la empresa.</p>
     </div>`
   });
   if (error) {
     console.error(`Error enviando correo (Resend) · from="${remitente}" to="${correo}" ->`, JSON.stringify(error));
     throw new Error(error.message || 'Resend rechazó el envío');
   }
-  console.log('Correo de verificación enviado a', correo, '· id:', data && data.id);
-  return { enviado: true, link };
+  console.log('Código de verificación enviado a', correo, '· id:', data && data.id);
+  return { enviado: true, codigo };
 }
+
 
 async function enviarRecuperacion(correo, nombre, token) {
   const link = `${SITE_URL}/pages/admin.html?reset=${token}`;
@@ -471,10 +484,11 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
     }
 
     const token = crypto.randomBytes(24).toString('hex');
+    const codigo = generarCodigo6();
     // 1) Enviar el correo PRIMERO. Si no se puede enviar, no guardamos nada.
     let verif;
     try {
-      verif = await enviarVerificacion(email, dueno.trim(), token, req.headers.origin);
+      verif = await enviarVerificacion(email, dueno.trim(), codigo);
     } catch (e) {
       console.warn('Registro abortado: no se pudo enviar el correo de verificación:', e.message);
       return res.status(502).json({ error: 'No pudimos enviar el correo de verificación a esa dirección. Revisá que el correo esté bien escrito e intentá de nuevo.' });
@@ -483,12 +497,12 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
     //    Reemplaza cualquier solicitud previa sin confirmar del mismo correo.
     await pool.query('DELETE FROM registros_pendientes WHERE correo=?', [email]);
     await pool.query(
-      'INSERT INTO registros_pendientes (token,nombre,tipos_negocio,gastronomia_habilitada,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,dueno,password_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      [token, nombre.trim().slice(0,120), JSON.stringify(tipos), gastronomia?1:0, categorias[0], JSON.stringify(categorias), String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logo || '', email, dueno.trim().slice(0,120), hashPassword(password)]);
-    // Sin Resend configurado (desarrollo local) no hay correo real: se manda el
-    // link directo en la respuesta para que el front lo pueda mostrar/abrir.
+      'INSERT INTO registros_pendientes (token,nombre,tipos_negocio,gastronomia_habilitada,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,dueno,password_hash,codigo,intentos) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)',
+      [token, nombre.trim().slice(0,120), JSON.stringify(tipos), gastronomia?1:0, categorias[0], JSON.stringify(categorias), String(descripcion||'').slice(0,255), String(telefono||'').slice(0,40), String(ciudad||'').slice(0,80), String(pais||'').slice(0,60), logo || '', email, dueno.trim().slice(0,120), hashPassword(password), codigo]);
+    // Sin Resend configurado (desarrollo local) no hay correo real: se devuelve
+    // el código para que el front lo pueda mostrar en pantalla mientras se prueba.
     const body = { ok: true, correo: email };
-    if (verif && verif.enviado === false) body.devLink = verif.link;
+    if (verif && verif.enviado === false) body.devCodigo = verif.codigo;
     res.json(body);
   } catch (e) {
     errorPublico(res, e);
@@ -564,9 +578,136 @@ app.get('/api/empresas/estado', limitarIntentos(40, 10 * 60 * 1000), async (req,
   } catch (e) { errorPublico(res, e); }
 });
 
-// Verificar el correo → RECIÉN AQUÍ se crea la empresa, la cuenta admin, su
-// config y contadores. Si nunca se confirma, nada de esto llega a existir.
-// El enlace vence a las 24 horas.
+/* Convierte un registro pendiente en empresa real: empresa activa, cuenta
+   admin, config y contadores. Todo dentro de la transacción que recibe, así
+   nunca queda una empresa a medio crear. Devuelve {empresaId, slug, adminId}.
+   La usan tanto el enlace antiguo como la verificación por código. */
+async function crearEmpresaDesdePendiente(c, r) {
+  // Si mientras tanto alguien ya creó una cuenta con ese correo, abortar.
+  const [dupU] = await c.query('SELECT id FROM users WHERE email=? LIMIT 1', [r.correo]);
+  if (dupU.length) { const e = new Error('correo-ocupado'); e.codigo = 'correo-ocupado'; throw e; }
+  // slug único
+  let base = slugify(r.nombre), slug = base, n = 1;
+  for (;;) { const [ex] = await c.query('SELECT id FROM empresas WHERE slug=? LIMIT 1', [slug]); if (!ex.length) break; slug = base + '-' + (++n); }
+  // Empresa ACTIVA
+  const [ins] = await c.query(
+    "INSERT INTO empresas (slug,nombre,tipos_negocio,gastronomia_habilitada,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,estado,verify_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'activa',NULL)",
+    [slug, r.nombre, JSON.stringify(arr(r.tipos_negocio)), r.gastronomia_habilitada?1:0, r.rubro || '', JSON.stringify(arr(r.rubros).length?arr(r.rubros):[r.rubro].filter(Boolean)), r.descripcion || '', r.telefono || '', r.ciudad || '', r.pais || '', '', r.correo]);
+  const empresaId = ins.insertId;
+  const logoFinal = await persistirImagenWeb(r.logo, { empresaId, carpeta: 'identidad' });
+  if (logoFinal) await c.query('UPDATE empresas SET logo=? WHERE id=?', [logoFinal, empresaId]);
+  // Cuenta admin ACTIVA (reutiliza el hash ya calculado en el registro)
+  const [adminIns] = await c.query('INSERT INTO users (nombre,email,password_hash,role,empresa_id,activo) VALUES (?,?,?,?,?,1)',
+    [r.dueno, r.correo, r.password_hash, 'admin', empresaId]);
+  // Config y contadores propios de la empresa
+  await c.query('INSERT INTO config (empresa_id,nombre,logo,moneda,tema,pin_admin,banners,pago) VALUES (?,?,?,?,?,?,?,?)',
+    [empresaId, r.nombre, logoFinal, 'L', 'cielo', '1234', JSON.stringify([]), JSON.stringify({ banco: '', cuenta: '', titular: '', tipo: '', nota: '' })]);
+  await c.query('INSERT INTO app_meta (empresa_id,seq) VALUES (?,?)',
+    [empresaId, JSON.stringify({ producto: 0, categoria: 0, proveedor: 0, cliente: 0, compra: 0, venta: 0, movimiento: 0, pedido: 0, mensaje: 0 })]);
+  // Ya es empresa real: quitar la solicitud pendiente
+  await c.query('DELETE FROM registros_pendientes WHERE token=?', [r.token]);
+  return { empresaId, slug, adminId: adminIns.insertId, nombre: r.dueno };
+}
+
+// Cuántas veces se puede fallar el código antes de invalidarlo. Seis dígitos
+// son un millón de combinaciones: sin este tope, probarlas todas sería viable.
+const MAX_INTENTOS_CODIGO = 5;
+
+// Verificar con el CÓDIGO de 6 dígitos que llegó al correo. Recién acá se crea
+// la empresa. Como quien escribe el código demostró que controla el correo, se
+// devuelve la sesión ya iniciada: el front entra directo al panel.
+app.post('/api/empresas/verificar-codigo', limitarIntentos(12, 10 * 60 * 1000), async (req, res) => {
+  const correo = String(req.body && req.body.correo || '').toLowerCase().trim();
+  const codigo = String(req.body && req.body.codigo || '').replace(/\D/g, '');
+  if (!correo || codigo.length !== 6) return res.status(400).json({ error: 'Escribí los 6 dígitos que te llegaron al correo.' });
+  const pool = getPool();
+  const c = await pool.getConnection();
+  try {
+    await c.beginTransaction();
+    const [[r]] = await c.query(
+      'SELECT * FROM registros_pendientes WHERE correo=? AND created_at > (NOW() - INTERVAL 1 HOUR) LIMIT 1 FOR UPDATE',
+      [correo]);
+    if (!r) {
+      await c.rollback();
+      return res.status(400).json({ error: 'No encontramos un registro pendiente para ese correo, o el código ya venció. Empezá de nuevo.' });
+    }
+    if (r.intentos >= MAX_INTENTOS_CODIGO) {
+      await c.rollback();
+      await pool.query('DELETE FROM registros_pendientes WHERE token=?', [r.token]);
+      return res.status(429).json({ error: 'Demasiados intentos fallidos. Por seguridad cancelamos este registro: volvé a crear tu empresa.' });
+    }
+    // Comparación en tiempo constante: no filtra cuántos dígitos acertaste.
+    const esperado = Buffer.from(String(r.codigo || '').padStart(6, ' '));
+    const recibido = Buffer.from(codigo.padStart(6, ' '));
+    if (!r.codigo || !crypto.timingSafeEqual(esperado, recibido)) {
+      await c.query('UPDATE registros_pendientes SET intentos=intentos+1 WHERE token=?', [r.token]);
+      await c.commit();
+      const quedan = MAX_INTENTOS_CODIGO - (r.intentos + 1);
+      return res.status(400).json({
+        error: quedan > 0
+          ? `Ese código no es correcto. Te ${quedan === 1 ? 'queda 1 intento' : `quedan ${quedan} intentos`}.`
+          : 'Ese código no es correcto y se agotaron los intentos. Volvé a crear tu empresa.'
+      });
+    }
+
+    let creada;
+    try {
+      creada = await crearEmpresaDesdePendiente(c, r);
+    } catch (e) {
+      if (e.codigo === 'correo-ocupado') {
+        await c.rollback();
+        await pool.query('DELETE FROM registros_pendientes WHERE token=?', [r.token]);
+        return res.status(409).json({ error: 'Ya existe una cuenta SIWEPE con ese correo.' });
+      }
+      throw e;
+    }
+    await c.commit();
+
+    // Sesión lista: el correo quedó demostrado, no hace falta pedir la clave.
+    const token = signToken({ id: creada.adminId, nombre: r.dueno, role: 'admin', empresa_id: creada.empresaId, ref_id: null });
+    res.json({
+      ok: true,
+      token,
+      slug: creada.slug,
+      user: { id: creada.adminId, nombre: r.dueno, role: 'admin', empresa_id: creada.empresaId, ref_id: null }
+    });
+  } catch (e) {
+    await c.rollback().catch(() => {});
+    errorPublico(res, e);
+  } finally { c.release(); }
+});
+
+// Reenviar el código: genera uno nuevo, reinicia los intentos y renueva la
+// hora de vencimiento. El código viejo deja de servir en el acto.
+app.post('/api/empresas/reenviar-codigo', limitarIntentos(3, 10 * 60 * 1000), async (req, res) => {
+  const correo = String(req.body && req.body.correo || '').toLowerCase().trim();
+  if (!correo) return res.status(400).json({ error: 'Falta el correo' });
+  const pool = getPool();
+  try {
+    const [[r]] = await pool.query(
+      'SELECT token,dueno,correo FROM registros_pendientes WHERE correo=? AND created_at > (NOW() - INTERVAL 24 HOUR) LIMIT 1',
+      [correo]);
+    // Se responde ok igual exista o no, para no revelar qué correos tienen un
+    // registro a medias.
+    if (!r) return res.json({ ok: true });
+    const codigo = generarCodigo6();
+    let verif;
+    try {
+      verif = await enviarVerificacion(r.correo, r.dueno, codigo);
+    } catch (e) {
+      console.warn('No se pudo reenviar el código:', e.message);
+      return res.status(502).json({ error: 'No pudimos reenviar el correo. Probá de nuevo en un momento.' });
+    }
+    await pool.query('UPDATE registros_pendientes SET codigo=?, intentos=0, created_at=NOW() WHERE token=?', [codigo, r.token]);
+    const body = { ok: true };
+    if (verif && verif.enviado === false) body.devCodigo = verif.codigo;
+    res.json(body);
+  } catch (e) { errorPublico(res, e); }
+});
+
+// Enlace de verificación ANTIGUO. Ya no se envía ninguno nuevo (ahora va un
+// código de 6 dígitos), pero sigue vivo para los correos que salieron antes:
+// quien tenga uno guardado todavía puede activar su empresa con él.
 app.get('/api/empresas/verificar/:token', async (req, res) => {
   const pool = getPool();
   const c = await pool.getConnection();
@@ -578,39 +719,24 @@ app.get('/api/empresas/verificar/:token', async (req, res) => {
     const r = rows[0];
 
     await c.beginTransaction();
-    // Si mientras tanto alguien ya creó una cuenta con ese correo, abortar.
-    const [dupU] = await c.query('SELECT id FROM users WHERE email=? LIMIT 1', [r.correo]);
-    if (dupU.length) {
-      await c.rollback();
-      await pool.query('DELETE FROM registros_pendientes WHERE token=?', [req.params.token]);
-      return res.redirect(`${SITE_URL}/index.html?verify=invalido`);
+    let creada;
+    try {
+      creada = await crearEmpresaDesdePendiente(c, r);
+    } catch (e) {
+      if (e.codigo === 'correo-ocupado') {
+        await c.rollback();
+        await pool.query('DELETE FROM registros_pendientes WHERE token=?', [r.token]);
+        return res.redirect(`${SITE_URL}/index.html?verify=invalido`);
+      }
+      throw e;
     }
-    // slug único
-    let base = slugify(r.nombre), slug = base, n = 1;
-    for (;;) { const [ex] = await c.query('SELECT id FROM empresas WHERE slug=? LIMIT 1', [slug]); if (!ex.length) break; slug = base + '-' + (++n); }
-    // Empresa ACTIVA
-    const [ins] = await c.query(
-      "INSERT INTO empresas (slug,nombre,tipos_negocio,gastronomia_habilitada,rubro,rubros,descripcion,telefono,ciudad,pais,logo,correo,estado,verify_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'activa',NULL)",
-      [slug, r.nombre, JSON.stringify(arr(r.tipos_negocio)), r.gastronomia_habilitada?1:0, r.rubro || '', JSON.stringify(arr(r.rubros).length?arr(r.rubros):[r.rubro].filter(Boolean)), r.descripcion || '', r.telefono || '', r.ciudad || '', r.pais || '', '', r.correo]);
-    const empresaId = ins.insertId;
-    const logoFinal = await persistirImagenWeb(r.logo, { empresaId, carpeta: 'identidad' });
-    if (logoFinal) await c.query('UPDATE empresas SET logo=? WHERE id=?', [logoFinal, empresaId]);
-    // Cuenta admin ACTIVA (reutiliza el hash ya calculado en el registro)
-    const [adminIns] = await c.query('INSERT INTO users (nombre,email,password_hash,role,empresa_id,activo) VALUES (?,?,?,?,?,1)',
-      [r.dueno, r.correo, r.password_hash, 'admin', empresaId]);
-    // Config y contadores propios de la empresa
-    await c.query('INSERT INTO config (empresa_id,nombre,logo,moneda,tema,pin_admin,banners,pago) VALUES (?,?,?,?,?,?,?,?)',
-      [empresaId, r.nombre, logoFinal, 'L', 'cielo', '1234', JSON.stringify([]), JSON.stringify({ banco: '', cuenta: '', titular: '', tipo: '', nota: '' })]);
-    await c.query('INSERT INTO app_meta (empresa_id,seq) VALUES (?,?)',
-      [empresaId, JSON.stringify({ producto: 0, categoria: 0, proveedor: 0, cliente: 0, compra: 0, venta: 0, movimiento: 0, pedido: 0, mensaje: 0 })]);
-    // Ya es empresa real: quitar la solicitud pendiente
-    await c.query('DELETE FROM registros_pendientes WHERE token=?', [req.params.token]);
     await c.commit();
-    const codigo=crypto.randomBytes(32).toString('hex');
-    await pool.query('DELETE FROM onboarding_sessions WHERE user_id=? OR expires_at<NOW()',[adminIns.insertId]);
-    await pool.query('INSERT INTO onboarding_sessions (code,user_id,expires_at) VALUES (?,?,DATE_ADD(NOW(),INTERVAL 15 MINUTE))',[codigo,adminIns.insertId]);
-    const destino=webBaseSeguro(req.query.site);
-    res.redirect(`${destino}/pages/admin.html?onboarding=${encodeURIComponent(codigo)}&e=${encodeURIComponent(slug)}`);
+
+    const codigo = crypto.randomBytes(32).toString('hex');
+    await pool.query('DELETE FROM onboarding_sessions WHERE user_id=? OR expires_at<NOW()', [creada.adminId]);
+    await pool.query('INSERT INTO onboarding_sessions (code,user_id,expires_at) VALUES (?,?,DATE_ADD(NOW(),INTERVAL 15 MINUTE))', [codigo, creada.adminId]);
+    const destino = webBaseSeguro(req.query.site);
+    res.redirect(`${destino}/pages/admin.html?onboarding=${encodeURIComponent(codigo)}&e=${encodeURIComponent(creada.slug)}`);
   } catch (e) {
     await c.rollback().catch(() => {});
     console.error(e);

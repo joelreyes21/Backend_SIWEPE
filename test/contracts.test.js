@@ -705,3 +705,38 @@ test('CORS acepta el dominio canónico con y sin www aunque Railway agregue orí
   assert.match(server,/'https:\/\/www\.siwepe\.shop'/);
   assert.match(server,/\.\.\.\(process\.env\.CORS_ORIGINS \|\| ''\)/);
 });
+
+test('la verificación de empresa usa un código de 6 dígitos y abre sesión', () => {
+  const server = leer(path.join(raiz, 'server.js'));
+  const schema = leer(path.join(raiz, 'schema.sql'));
+  const portada = leer(path.join(front, 'index.html'));
+
+  // El registro pendiente guarda el código y cuántas veces se falló.
+  assert.match(schema, /codigo\s+VARCHAR\(6\)/);
+  assert.match(schema, /intentos\s+TINYINT NOT NULL DEFAULT 0/);
+
+  // El correo lleva el código, ya no un enlace de activación.
+  assert.match(server, /es tu código de verificación/);
+  assert.doesNotMatch(server, /Verificar mi empresa<\/a>/);
+
+  // Código imposible de adivinar por fuerza bruta: aleatorio, sin sesgo,
+  // comparado en tiempo constante y con tope de intentos.
+  assert.match(server, /function generarCodigo6/);
+  assert.match(server, /crypto\.randomBytes\(4\)\.readUInt32BE\(0\)/);
+  assert.match(server, /crypto\.timingSafeEqual/);
+  assert.match(server, /MAX_INTENTOS_CODIGO = 5/);
+
+  // Verificar el código crea la empresa y devuelve la sesión ya iniciada.
+  assert.match(server, /app\.post\('\/api\/empresas\/verificar-codigo'/);
+  assert.match(server, /const token = signToken\(\{ id: creada\.adminId/);
+  // Reenvío limitado, para no poder inundar de correos una casilla ajena.
+  assert.match(server, /app\.post\('\/api\/empresas\/reenviar-codigo', limitarIntentos\(3/);
+  // Una sola rutina crea la empresa: enlace viejo y código nuevo comparten camino.
+  assert.match(server, /async function crearEmpresaDesdePendiente/);
+
+  // La portada pide los 6 dígitos y entra al panel con el token recibido.
+  assert.match(portada, /id="wz-cod"/);
+  assert.match(portada, /verificar-codigo/);
+  assert.match(portada, /localStorage\.setItem\('bs_token', j\.token/);
+  assert.doesNotMatch(portada, /wzEsperarConfirmacion/);
+});

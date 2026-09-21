@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS registros_pendientes (
   correo        VARCHAR(120) NOT NULL,
   dueno         VARCHAR(120) NOT NULL,
   password_hash VARCHAR(120) NOT NULL,
+  -- Codigo de 6 digitos que se envia al correo. `intentos` cuenta los fallos
+  -- para que nadie pueda adivinarlo probando combinaciones.
+  codigo        VARCHAR(6),
+  intentos      TINYINT NOT NULL DEFAULT 0,
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   KEY idx_reg_correo (correo)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
