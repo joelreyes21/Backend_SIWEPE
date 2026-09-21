@@ -498,13 +498,16 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
 // Lista pública de empresas activas (para "Descubrir empresas")
 app.get('/api/empresas', async (req, res) => {
   try {
-    const [rows] = await getPool().query("SELECT id,slug,nombre,tipos_negocio,rubro,rubros,descripcion,telefono,ciudad,pais,logo,contacto_publico,correo_publico,visitas,(SELECT ROUND(AVG(estrellas),1) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating,(SELECT COUNT(*) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating_count FROM empresas WHERE estado='activa' ORDER BY nombre");
-    res.json(rows.map(({ tipos_negocio, rubros, contacto_publico, correo_publico, rating_count, ...x }) => ({
+    // Listado público del marketplace: solo lo que la tarjeta de Descubrir
+    // necesita para pintarse. El teléfono y el correo de contacto NO viajan
+    // acá — se entregan únicamente en /api/catalog, al abrir esa tienda, que
+    // es donde el dueño decidió publicarlos. Así un scraper del listado no se
+    // lleva los datos de contacto de todas las empresas de una sola consulta.
+    const [rows] = await getPool().query("SELECT id,slug,nombre,tipos_negocio,rubro,rubros,descripcion,ciudad,pais,logo,visitas,(SELECT ROUND(AVG(estrellas),1) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating,(SELECT COUNT(*) FROM calificaciones k WHERE k.empresa_id=empresas.id) AS rating_count FROM empresas WHERE estado='activa' ORDER BY nombre");
+    res.json(rows.map(({ tipos_negocio, rubros, rating_count, ...x }) => ({
       ...x,
       tiposNegocio: arr(tipos_negocio),
       rubros: arr(rubros).length?arr(rubros):[x.rubro].filter(Boolean),
-      contactoPublico: contacto_publico || '',
-      correoPublico: correo_publico || '',
       rating: x.rating != null ? Number(x.rating) : null,
       ratingCount: Number(rating_count) || 0
     })));

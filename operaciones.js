@@ -259,7 +259,11 @@ async function leerArchivo(buffer,nombre){
   const datos=esCsv?leerCsv(rawCsv,detectarSeparador(rawCsv)):await readSheet(buffer);
   if(!datos.length) throw error('El archivo no contiene filas');
   const headers={};datos[0].forEach((valor,col)=>{const k=encabezados[limpioHeader(valor)];if(k)headers[col]=k;});
-  if(!Object.values(headers).includes('nombre')) throw error('La hoja necesita una columna Nombre o Producto');
+  if(!Object.values(headers).includes('nombre')){
+    // Se cita lo que sí trae la fila 1 para que el dueño vea dónde está el problema.
+    const vistas=(datos[0]||[]).map(v=>String(v||'').trim()).filter(Boolean).slice(0,12);
+    throw error(`La fila 1 debe tener una columna "Nombre" (o "Producto"). En su lugar se encontró: ${vistas.length?vistas.join(' | '):'una fila vacía'}. Descargá la plantilla CSV y conservá sus cabeceras.`);
+  }
   const filas=[];
   for(let n=1;n<datos.length&&filas.length<1000;n++){const row=datos[n],x={};for(const [col,k] of Object.entries(headers))x[k]=row[Number(col)]==null?'':String(row[Number(col)]).trim();if(Object.values(x).some(Boolean))filas.push({fila:n+1,codigo:texto(x.codigo,40),nombre:texto(x.nombre,120),categoria:texto(x.categoria,80),descripcion:texto(x.descripcion,1000),precioCompra:num(x.precioCompra),precioVenta:num(x.precioVenta),stock:Math.max(0,Math.trunc(num(x.stock))),stockInventario:Math.max(0,Math.trunc(num(x.stockInventario))),stockMin:Math.max(0,Math.trunc(num(x.stockMin))),marca:texto(x.marca,80),estado:String(x.estado||'activo').toLowerCase()==='inactivo'?'inactivo':'activo',generarCodigo:/^(si|sí|yes|1|true)$/i.test(x.generarCodigo||'')});}
   return filas;

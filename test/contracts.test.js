@@ -46,8 +46,10 @@ test('la tienda usa autenticación global y checkout dedicado', () => {
   assert.doesNotMatch(tienda, /cliente-login/);
   assert.doesNotMatch(tienda, /Esta cuenta no es una cuenta de cliente/);
   assert.match(html, /Acceso para tus compras/);
-  assert.match(html, /Clientes y administradores pueden comprar/);
-  assert.match(html, /Panel Administrador/);
+  // D1: el login de COMPRAS no muestra la puerta del panel de administración.
+  // El dueño entra por la portada o por admin.html?login=1, no desde acá.
+  assert.match(html, /Con tu cuenta SIWEPE comprás en esta tienda/);
+  assert.doesNotMatch(html, /Panel Administrador/);
   assert.match(html, /siwepe-logo\.png/);
   assert.match(html, /Una cuenta\.[\s\S]*Todas tus tiendas\./);
   assert.match(html, /id="sw-tienda-contexto"/);
@@ -318,10 +320,13 @@ test('los formularios conservan datos, aceptan precio cero y proveedores rápido
 test('editar un producto permite repartir existencias entre tienda e inventario', () => {
   const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
   assert.match(adminMain,/const totalExistencias=p\?\(\+p\.stock\|\|0\)\+\(\+p\.stock_inventario\|\|0\):0/);
-  assert.match(adminMain,/id="fp-stock"[^>]+max="\$\{totalExistencias\}"/);
-  assert.match(adminMain,/\$\('#fp-stock-inv'\)\.value=totalExistencias-publicado/);
-  assert.match(adminMain,/Inventario → tienda · edición de producto/);
-  assert.match(adminMain,/Tienda → inventario · edición de producto/);
+  // El total es el dato de solo lectura; tienda y bodega se escriben a mano.
+  assert.match(adminMain,/id="fp-stock-total"[^>]+readonly/);
+  assert.match(adminMain,/id="fp-stock"[^>]+oninput="actualizarResumenGlobalVariantes\(\)"/);
+  assert.match(adminMain,/id="fp-stock-inv"[^>]+oninput="actualizarResumenGlobalVariantes\(\)"/);
+  // Los dos saldos siguen siendo conceptos distintos en la interfaz.
+  assert.match(adminMain,/Unidades a la venta en la tienda/);
+  assert.match(adminMain,/Unidades en bodega, no publicadas/);
 });
 
 test('la galería aplica límites de cantidad y peso en cliente y servidor', () => {
@@ -378,15 +383,14 @@ test('los recursos locales referenciados por las páginas existen', () => {
   }
 });
 
-test('los accesos muestran el aviso de atajo bloqueado sin tratarlo como seguridad', () => {
-  const guardia=leer(path.join(front,'assets','js','shared','noinspect.js'));
+test('no se bloquean las herramientas de desarrollo del navegador', () => {
+  // noinspect.js se retiró a propósito: bloquear F12 no es una frontera de
+  // seguridad real y estorba a quien audita el sitio. No debe volver.
+  assert.equal(fs.existsSync(path.join(front,'assets','js','shared','noinspect.js')), false);
   for (const nombre of ['admin.html','tienda.html','superadmin.html']) {
     const html=leer(path.join(pages,nombre));
-    assert.match(html,/shared\/noinspect\.js/,`${nombre}: falta la ayuda de acceso`);
+    assert.doesNotMatch(html,/noinspect/,`${nombre}: volvió el bloqueo de DevTools`);
   }
-  assert.match(guardia,/tecla==='f12'/);
-  assert.match(guardia,/Acción bloqueada en esta pantalla/);
-  assert.match(guardia,/no se considera una frontera de seguridad/i);
 });
 
 test('el centro legal publica todas las políticas y está enlazado en la compra', () => {
@@ -395,8 +399,16 @@ test('el centro legal publica todas las políticas y está enlazado en la compra
   for (const id of ['terminos','privacidad','cookies','envios','comercios']) {
     assert.match(legal,new RegExp(`data-policy="${id}"`),`falta política ${id}`);
   }
-  assert.match(legal,/21 de agosto de 2026/);
-  assert.match(legal,/profesional local debe adaptar estas políticas/i);
+  // Documento vigente: se comprueba que declare una fecha de actualización,
+  // no una fecha concreta que quedaría obsoleta en cada revisión.
+  assert.match(legal,/Última actualización/);
+  assert.match(legal,/<strong>\d{1,2} de [a-záéíóú]+ de \d{4}<\/strong>/i);
+  // F1: ya no se presenta como borrador pendiente de revisión profesional.
+  assert.doesNotMatch(legal,/Antes de publicar SIWEPE en producción/);
+  // F1: el centro legal ya no se presenta como borrador. Lo que sí debe
+  // seguir diciendo es que cada tienda responde por su propia operación.
+  assert.match(legal,/Cada tienda es independiente/i);
+  assert.match(legal,/El vendedor responde por sus productos/i);
   assert.match(checkout,/terminos\.html#envios/);
 });
 
@@ -531,9 +543,14 @@ test('los productos se crean desde inventario y el catálogo administrativo qued
   const adminMain=leer(path.join(front,'assets','js','admin','main.js'));
   const adminOps=leer(path.join(front,'assets','js','admin','operations.js'));
   const cabecera=adminHtml.match(/<div class="page" id="page-productos">[\s\S]*?<\/div>\s*<div class="filters-bar">/i)?.[0]||'';
-  assert.match(cabecera,/Importar Excel/);
-  assert.doesNotMatch(cabecera,/openFormProducto\(\)/);
-  assert.doesNotMatch(adminMain,/class="pca-actions"/);
+  // E2/I6: la plantilla real es CSV con punto y coma, y el copy lo dice.
+  assert.match(cabecera,/Importar CSV/);
+  // I1/I2: desde Productos se puede crear y editar la ficha; el traslado de
+  // unidades sigue siendo tarea de Inventario.
+  assert.match(cabecera,/openFormProducto\(\)/);
+  assert.match(adminMain,/pca-acciones/);
+  assert.match(adminMain,/onclick="openFormProducto\(\$\{p\.id\}\)"/);
+  assert.match(adminMain,/onclick="deleteProducto\(\$\{p\.id\}\)"/);
   for(const id of ['fp-codigo','fp-nombre','fp-desc','fp-pventa','fp-stock-inv','fp-stockmin','fp-variants','fp-destacado','fp-marca']) assert.match(adminMain,new RegExp(`id="${id}"`));
   assert.doesNotMatch(adminMain,/id="fp-barcode"|Código de barras interno/);
   assert.ok(adminMain.indexOf('Galería principal')<adminMain.indexOf('Desglose por variantes'),'la galería principal debe aparecer antes de las variantes');
