@@ -307,12 +307,33 @@ const PAIS_TEL = {
   'Chile':{tel:9,code:'56'},'Argentina':{tel:10,code:'54'},'Uruguay':{tel:8,code:'598'},'Paraguay':{tel:9,code:'595'},
   'Brasil':{tel:11,code:'55'},'Canadá':{tel:10,code:'1'},'Estados Unidos':{tel:10,code:'1'},'España':{tel:9,code:'34'}
 };
-function validarTelefono(raw, pais, etiqueta) {
+// Con qué dígito arranca un CELULAR en cada país. El botón de WhatsApp solo
+// sirve con un móvil: un fijo (o un 0000-0000) deja la tienda incontactable.
+const PAIS_MOVIL = {
+  'Honduras':/^[3789]/, 'Guatemala':/^[3456]/, 'El Salvador':/^[67]/, 'Nicaragua':/^[578]/,
+  'Costa Rica':/^[5678]/, 'Panamá':/^6/, 'México':/^[1-9]/, 'Colombia':/^3/,
+  'Ecuador':/^9/, 'Perú':/^9/, 'Chile':/^9/, 'Bolivia':/^[67]/, 'Paraguay':/^9/,
+  'Uruguay':/^9/, 'España':/^[67]/, 'Brasil':/^[1-9]/
+};
+/* Rechaza los números que "cumplen el largo" pero no existen: 0000-0000,
+   1111-1111, 12345678, 87654321. Son los que se escriben para salir del paso
+   y dejan el botón de WhatsApp apuntando a la nada. */
+function telefonoFalso(d) {
+  if (/^(\d)\1+$/.test(d)) return true;                    // todos los dígitos iguales
+  const asc = '01234567890123456789', desc = '09876543210987654321';
+  if (asc.includes(d) || desc.includes(d)) return true;     // 12345678 / 87654321
+  return false;
+}
+
+function validarTelefono(raw, pais, etiqueta, obligatorio) {
   // Exige exactamente los dígitos que usa el país elegido. Si el país no está
-  // en el mapa, cae a una validación tolerante (8–15 dígitos). Vacío se permite.
+  // en el mapa, cae a una validación tolerante (8–15 dígitos).
   const et = etiqueta || 'teléfono';
   let solo = String(raw || '').replace(/\D/g, '');
-  if (!solo) return { ok: true, valor: '' };
+  if (!solo) {
+    if (obligatorio) return { ok: false, error: `Escribí un ${et} real: es el número que usan tus clientes para escribirte por WhatsApp.` };
+    return { ok: true, valor: '' };
+  }
   const info = pais && PAIS_TEL[pais];
   if (info) {
     // Si viene con el código de país incluido (ej. 504########), se lo quitamos.
@@ -322,10 +343,16 @@ function validarTelefono(raw, pais, etiqueta) {
     if (solo.length !== info.tel) {
       return { ok: false, error: `El ${et} de ${pais} debe tener ${info.tel} dígitos.` };
     }
+    if (telefonoFalso(solo)) return { ok: false, error: `Ese ${et} no es un número real. Escribí el celular donde recibís WhatsApp.` };
+    const movil = PAIS_MOVIL[pais];
+    if (movil && !movil.test(solo)) {
+      return { ok: false, error: `Ese no parece un celular de ${pais}. El botón de WhatsApp de tu tienda necesita un móvil.` };
+    }
     return { ok: true, valor: solo };
   }
   if (solo.length < 8) return { ok: false, error: `El ${et} es muy corto (mínimo 8 dígitos).` };
   if (solo.length > 15) return { ok: false, error: `El ${et} tiene demasiados dígitos.` };
+  if (telefonoFalso(solo)) return { ok: false, error: `Ese ${et} no es un número real.` };
   return { ok: true, valor: solo };
 }
 /* Nombre de PERSONA (dueño / cliente): solo letras, espacios y los signos
@@ -333,9 +360,21 @@ function validarTelefono(raw, pais, etiqueta) {
    NO permite números ni caracteres especiales. Para nombres de NEGOCIO o
    PRODUCTO usá validarNombreNegocio (esos sí pueden llevar números, p. ej.
    "Café 24/7"). */
-function validarNombrePersona(nombre, etiqueta, maxLen) {
+// Palabras que nadie usa como nombre propio: son las que se escriben cuando
+// alguien está "solo probando". Antes pasaban porque son palabras reales y el
+// detector de azar no las marcaba.
+const NOMBRES_DE_PRUEBA = new Set([
+  'prueba','pruebas','test','testing','tester','ejemplo','example','demo',
+  'asdf','asd','qwerty','qwe','zxc','aaa','bbb','xxx','abc',
+  'nombre','apellido','usuario','user','admin','administrador','anonimo','ninguno','xd'
+]);
+
+/* Valida un nombre de persona. Con `exigirCompleto` pide nombre Y apellido:
+   una sola palabra no alcanza para identificar a quien administra una tienda
+   ni para rotular una entrega. */
+function validarNombrePersona(nombre, etiqueta, maxLen, exigirCompleto) {
   const et = etiqueta || 'nombre';
-  const max = maxLen || 30;
+  const max = maxLen || (exigirCompleto ? 60 : 30);
   const n = String(nombre || '').trim().replace(/\s+/g, ' ');
   if (n.length < 2) return { ok: false, error: `El ${et} es muy corto.` };
   if (n.length > max) return { ok: false, error: `El ${et} no puede pasar de ${max} caracteres.` };
@@ -343,6 +382,20 @@ function validarNombrePersona(nombre, etiqueta, maxLen) {
   if (!/^[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ'’\- ]+$/.test(n)) return { ok: false, error: `El ${et} solo puede tener letras (sin caracteres especiales).` };
   const letras = (n.match(/[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/g) || []).length;
   if (letras < 2) return { ok: false, error: `Escribí un ${et} válido.` };
+
+  // Sin tildes y en minúsculas, para comparar contra la lista de arriba.
+  const palabras = n.split(' ').filter(Boolean);
+  const plano = p => p.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z]/g, '');
+  if (palabras.some(p => NOMBRES_DE_PRUEBA.has(plano(p)))) {
+    return { ok: false, error: `Ese ${et} no parece real. Escribí tu nombre y apellido de verdad.` };
+  }
+  if (exigirCompleto) {
+    if (palabras.length < 2) return { ok: false, error: `Escribí nombre y apellido (por ejemplo: María Gómez).` };
+    // "Juan P" o "A Gómez" no identifican a nadie: cada parte necesita cuerpo.
+    if (palabras.filter(p => plano(p).length >= 2).length < 2) {
+      return { ok: false, error: `Escribí el nombre y el apellido completos, no iniciales.` };
+    }
+  }
   if (pareceAleatorio(n)) return { ok: false, error: `El ${et} parece escrito al azar. Usá un nombre real.` };
   return { ok: true, valor: n };
 }
@@ -452,8 +505,8 @@ app.post('/api/empresas', limitarIntentos(4, 15 * 60 * 1000), async (req, res) =
   if (!nombre || !dueno || !correo || !password) return res.status(400).json({ error: 'Faltan datos obligatorios' });
   if (String(password).length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
   { const vN = validarNombreNegocio(nombre, 'nombre del negocio', 30); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
-  { const vD = validarNombrePersona(dueno, 'nombre del dueño'); if (!vD.ok) return res.status(400).json({ error: vD.error }); }
-  { const vT = validarTelefono(telefono, pais, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
+  { const vD = validarNombrePersona(dueno, 'nombre del dueño', 60, true); if (!vD.ok) return res.status(400).json({ error: vD.error }); }
+  { const vT = validarTelefono(telefono, pais, 'teléfono', true); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   const email = String(correo).toLowerCase().trim();
   if (esCorreoDesechable(email)) return res.status(400).json({ error: 'Usá un correo real, no uno temporal — lo vas a necesitar para administrar tu tienda.' });
   const pool = getPool();
@@ -822,7 +875,7 @@ app.post('/api/auth/register', limitarIntentos(4, 10 * 60 * 1000), async (req, r
   if (!nombre || !String(nombre).trim() || !correo || !password || String(password).length < 8) {
     return res.status(400).json({ error: 'Nombre, correo y contraseña (mín. 8 caracteres) obligatorios' });
   }
-  { const vN = validarNombrePersona(nombre, 'nombre'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vN = validarNombrePersona(nombre, 'nombre', 60, true); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
   { const vT = validarTelefono(telefono, null, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   { const vW = validarTelefono(whatsapp, null, 'WhatsApp'); if (!vW.ok) return res.status(400).json({ error: vW.error }); }
   const email = String(correo).toLowerCase().trim();
@@ -960,7 +1013,7 @@ app.put('/api/empresas/mi', requireAuth, requireRole('admin'), async (req, res) 
   const { nombre, tiposNegocio, gastronomiaHabilitada, rubro, rubros, descripcion, telefono, ciudad, pais, logo, contactoPublico, correoPublico } = req.body || {};
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre del negocio' });
   { const vN = validarNombreNegocio(nombre, 'nombre del negocio', 30); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
-  { const vT = validarTelefono(telefono, pais, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
+  { const vT = validarTelefono(telefono, pais, 'teléfono', true); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   try {
     exigirImagenWeb(logo, 'Logo');
     const logoFinal = await persistirImagenWeb(logo, { empresaId, carpeta: 'identidad' });
@@ -1006,7 +1059,7 @@ function datosClienteManual(body) {
   const correo=String(body && body.correo || '').trim().toLowerCase().slice(0,120);
   if (!nombre) { const e=new Error('Escribe el nombre del cliente'); e.status=400; throw e; }
   if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) { const e=new Error('El correo no es válido'); e.status=400; throw e; }
-  { const vN=validarNombrePersona(nombre,'nombre del cliente'); if(!vN.ok){ const e=new Error(vN.error); e.status=400; throw e; } }
+  { const vN=validarNombrePersona(nombre,'nombre del cliente',60,true); if(!vN.ok){ const e=new Error(vN.error); e.status=400; throw e; } }
   const vT=validarTelefono(body && body.telefono, null, 'teléfono'); if(!vT.ok){ const e=new Error(vT.error); e.status=400; throw e; }
   const vW=validarTelefono(body && body.whatsapp, null, 'WhatsApp'); if(!vW.ok){ const e=new Error(vW.error); e.status=400; throw e; }
   const vD=validarDireccion(body && body.direccion, 'dirección'); if(!vD.ok){ const e=new Error(vD.error); e.status=400; throw e; }
@@ -1094,7 +1147,7 @@ app.post('/api/creditos', requireAuth, requireRole('admin'), async (req, res) =>
     const nombre = String(b.clienteNombre || '').trim().slice(0, 120);
     const monto = num(b.monto);
     if (!nombre) return res.status(400).json({ error: 'Escribe el nombre del cliente' });
-    { const vN = validarNombrePersona(nombre, 'nombre del cliente'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+    { const vN = validarNombrePersona(nombre, 'nombre del cliente', 60, true); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
     if (!(monto > 0)) return res.status(400).json({ error: 'El monto de la cuenta por cobrar debe ser mayor que 0' });
     const fecha = /^\d{4}-\d{2}-\d{2}$/.test(b.fecha) ? b.fecha : new Date().toISOString().slice(0, 10);
     const vence = /^\d{4}-\d{2}-\d{2}$/.test(b.vence) ? b.vence : null;
@@ -1551,7 +1604,7 @@ app.post('/api/ventas/directas', requireAuth, requireRole('admin'), async(req,re
 app.put('/api/clientes/mi', requireAuth, requireRole('cliente','admin'), async (req, res) => {
   const { nombre, telefono, correo, direccion, whatsapp } = req.body || {};
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'Falta el nombre' });
-  { const vN = validarNombrePersona(nombre, 'nombre'); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
+  { const vN = validarNombrePersona(nombre, 'nombre', 60, true); if (!vN.ok) return res.status(400).json({ error: vN.error }); }
   { const vT = validarTelefono(telefono, null, 'teléfono'); if (!vT.ok) return res.status(400).json({ error: vT.error }); }
   { const vW = validarTelefono(whatsapp, null, 'WhatsApp'); if (!vW.ok) return res.status(400).json({ error: vW.error }); }
   const email = correo ? String(correo).toLowerCase().trim() : null;
