@@ -553,7 +553,8 @@ test('los productos se crean desde inventario y el catálogo administrativo qued
   assert.match(adminMain,/onclick="deleteProducto\(\$\{p\.id\}\)"/);
   for(const id of ['fp-codigo','fp-nombre','fp-desc','fp-pventa','fp-stock-inv','fp-stockmin','fp-variants','fp-destacado','fp-marca']) assert.match(adminMain,new RegExp(`id="${id}"`));
   assert.doesNotMatch(adminMain,/id="fp-barcode"|Código de barras interno/);
-  assert.ok(adminMain.indexOf('Galería principal')<adminMain.indexOf('Desglose por variantes'),'la galería principal debe aparecer antes de las variantes');
+  assert.ok(adminMain.indexOf('Galería principal')<adminMain.indexOf('id="fp-variants-field"'),'la galería principal debe aparecer antes del bloque de variantes');
+  assert.ok(adminMain.indexOf('id="fp-variants-field"')<adminMain.indexOf('onclick="saveProducto('),'las variantes deben quedar al final, justo antes del botón Guardar');
   assert.match(adminMain,/imagenes:compraImagenesDraft\.slice\(0,5\)/);
   assert.match(adminMain,/Distribuye exactamente/);
   assert.match(adminOps,/__varianteModoEntrada/);
@@ -655,7 +656,7 @@ test('variantes opcionales conectan entrada, venta directa, imágenes y selector
   assert.match(adminOps,/SIWEPE creará una variante real por cada talla elegida/);
   assert.match(adminOps,/El SKU se genera automáticamente/);
   assert.match(adminOps,/actualizarResumenVariantesEntrada/);
-  assert.match(adminMain,/Opciones por color, talla o presentación/);
+  assert.match(adminMain,/id="btn-agregar-variante-compra"/);
   assert.doesNotMatch(adminMain,/id="fc-nuevo-pcompra-vista"/);
   assert.doesNotMatch(adminMain,/id="fp-stock-inv" type="number" value="0" readonly/);
   assert.match(adminMain,/distribucionVariantes/);
